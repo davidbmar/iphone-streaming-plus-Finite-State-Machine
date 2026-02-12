@@ -1,0 +1,362 @@
+[
+  {
+    "id": "chunk-001",
+    "doc_id": "meeting-2025-01-15",
+    "ts_start": 0,
+    "ts_end": 12,
+    "speaker": "Alice",
+    "text": "We need to decide on the primary database. I'm leaning toward PostgreSQL because of its strong support for JSON columns, full-text search, and the ability to handle complex queries with CTEs and window functions.",
+    "charCount": 212
+  },
+  {
+    "id": "chunk-002",
+    "doc_id": "meeting-2025-01-15",
+    "ts_start": 12,
+    "ts_end": 25,
+    "speaker": "Bob",
+    "text": "For the database schema, I suggest we normalize the core tables but use JSONB columns for flexible metadata. We should add GIN indexes on the JSONB fields and B-tree indexes on foreign keys.",
+    "charCount": 190
+  },
+  {
+    "id": "chunk-003",
+    "doc_id": "meeting-2025-01-15",
+    "ts_start": 25,
+    "ts_end": 40,
+    "speaker": "Alice",
+    "text": "Query performance is critical. We should set up connection pooling with PgBouncer, enable query plan caching, and monitor slow queries using pg_stat_statements. I'd also recommend partitioning the events table by month.",
+    "charCount": 219
+  },
+  {
+    "id": "chunk-004",
+    "doc_id": "meeting-2025-01-15",
+    "ts_start": 40,
+    "ts_end": 52,
+    "speaker": "Carol",
+    "text": "Database migrations should be managed with a proper tool. I recommend we use golang-migrate or Flyway for versioned migrations, and always test them against a staging copy before production.",
+    "charCount": 190
+  },
+  {
+    "id": "chunk-005",
+    "doc_id": "meeting-2025-01-15",
+    "ts_start": 52,
+    "ts_end": 63,
+    "speaker": "Bob",
+    "text": "We should also consider read replicas for the database. The analytics dashboard can query a replica to avoid putting load on the primary write instance.",
+    "charCount": 152
+  },
+  {
+    "id": "chunk-006",
+    "doc_id": "meeting-2025-01-15",
+    "ts_start": 63,
+    "ts_end": 78,
+    "speaker": "Dave",
+    "text": "For user authentication, we'll implement OAuth 2.0 with PKCE flow for the single-page application. We'll support Google and GitHub as identity providers initially, with the option to add SAML for enterprise customers.",
+    "charCount": 217
+  },
+  {
+    "id": "chunk-007",
+    "doc_id": "meeting-2025-01-15",
+    "ts_start": 78,
+    "ts_end": 93,
+    "speaker": "Alice",
+    "text": "JWT tokens will be used for API authentication. Access tokens should be short-lived, around fifteen minutes, with refresh tokens stored in HTTP-only secure cookies. We need to implement token rotation on each refresh.",
+    "charCount": 217
+  },
+  {
+    "id": "chunk-008",
+    "doc_id": "meeting-2025-01-15",
+    "ts_start": 93,
+    "ts_end": 106,
+    "speaker": "Dave",
+    "text": "Session management is important. We should track active sessions per user, allow users to revoke sessions from their settings page, and implement automatic session expiry after thirty days of inactivity.",
+    "charCount": 203
+  },
+  {
+    "id": "chunk-009",
+    "doc_id": "meeting-2025-01-15",
+    "ts_start": 106,
+    "ts_end": 120,
+    "speaker": "Carol",
+    "text": "Role-based access control needs to be implemented. We'll have admin, editor, and viewer roles. Permissions should be checked both on the API layer and in the UI to prevent unauthorized access to sensitive operations.",
+    "charCount": 216
+  },
+  {
+    "id": "chunk-010",
+    "doc_id": "meeting-2025-01-15",
+    "ts_start": 120,
+    "ts_end": 135,
+    "speaker": "Dave",
+    "text": "Two-factor authentication should be supported from launch. We'll use TOTP with authenticator apps as the primary method, and SMS as a fallback. Rate limiting on login attempts is essential to prevent brute force attacks.",
+    "charCount": 220
+  },
+  {
+    "id": "chunk-011",
+    "doc_id": "meeting-2025-01-15",
+    "ts_start": 135,
+    "ts_end": 148,
+    "speaker": "Eve",
+    "text": "The frontend will be built with React and TypeScript. We'll use Next.js for server-side rendering on the marketing pages and a pure SPA for the application dashboard.",
+    "charCount": 166
+  },
+  {
+    "id": "chunk-012",
+    "doc_id": "meeting-2025-01-15",
+    "ts_start": 148,
+    "ts_end": 162,
+    "speaker": "Eve",
+    "text": "For state management in the React app, I recommend Zustand over Redux. It's simpler, has less boilerplate, and works well with TypeScript. We'll combine it with React Query for server state management.",
+    "charCount": 201
+  },
+  {
+    "id": "chunk-013",
+    "doc_id": "meeting-2025-01-15",
+    "ts_start": 162,
+    "ts_end": 175,
+    "speaker": "Alice",
+    "text": "Component architecture should follow atomic design principles. We'll build a shared component library with Storybook for documentation. Each component should have unit tests and visual regression tests.",
+    "charCount": 202
+  },
+  {
+    "id": "chunk-014",
+    "doc_id": "meeting-2025-01-15",
+    "ts_start": 175,
+    "ts_end": 188,
+    "speaker": "Eve",
+    "text": "The design system will use Tailwind CSS for utility-first styling. We'll define custom theme tokens for colors, spacing, and typography to ensure consistency across the application.",
+    "charCount": 181
+  },
+  {
+    "id": "chunk-015",
+    "doc_id": "meeting-2025-01-15",
+    "ts_start": 188,
+    "ts_end": 202,
+    "speaker": "Carol",
+    "text": "Accessibility is non-negotiable. All interactive components must meet WCAG 2.1 AA standards. We'll use axe-core for automated accessibility testing and conduct manual screen reader testing monthly.",
+    "charCount": 197
+  },
+  {
+    "id": "chunk-016",
+    "doc_id": "meeting-2025-01-15",
+    "ts_start": 202,
+    "ts_end": 218,
+    "speaker": "Bob",
+    "text": "For application performance, we need a multi-layer caching strategy. Redis will handle session caching and frequently accessed data. We'll use a CDN for static assets with cache-busting via content hashes.",
+    "charCount": 205
+  },
+  {
+    "id": "chunk-017",
+    "doc_id": "meeting-2025-01-15",
+    "ts_start": 218,
+    "ts_end": 232,
+    "speaker": "Bob",
+    "text": "Load balancing will be handled by an Application Load Balancer with health checks. We need auto-scaling groups that respond to CPU and memory metrics. Target is to handle ten thousand concurrent users.",
+    "charCount": 201
+  },
+  {
+    "id": "chunk-018",
+    "doc_id": "meeting-2025-01-15",
+    "ts_start": 232,
+    "ts_end": 245,
+    "speaker": "Alice",
+    "text": "API response times should stay under two hundred milliseconds at the ninety-fifth percentile. We'll implement request-level caching with ETags and conditional GET support to reduce server load.",
+    "charCount": 193
+  },
+  {
+    "id": "chunk-019",
+    "doc_id": "meeting-2025-01-15",
+    "ts_start": 245,
+    "ts_end": 260,
+    "speaker": "Eve",
+    "text": "Image and asset optimization is important for performance. We should serve images in WebP format with lazy loading, implement code splitting at the route level, and keep the initial JavaScript bundle under two hundred kilobytes.",
+    "charCount": 228
+  },
+  {
+    "id": "chunk-020",
+    "doc_id": "meeting-2025-01-15",
+    "ts_start": 260,
+    "ts_end": 273,
+    "speaker": "Carol",
+    "text": "We need to set up monitoring and alerting for performance regressions. Datadog for APM, custom dashboards for key business metrics, and PagerDuty integration for critical alerts.",
+    "charCount": 178
+  },
+  {
+    "id": "chunk-021",
+    "doc_id": "meeting-2025-01-15",
+    "ts_start": 273,
+    "ts_end": 288,
+    "speaker": "Frank",
+    "text": "Deployment will use Docker containers orchestrated by Kubernetes. We'll define all infrastructure as code using Terraform and maintain separate staging and production clusters.",
+    "charCount": 176
+  },
+  {
+    "id": "chunk-022",
+    "doc_id": "meeting-2025-01-15",
+    "ts_start": 288,
+    "ts_end": 305,
+    "speaker": "Frank",
+    "text": "The CI/CD pipeline will run on GitHub Actions. Every pull request triggers linting, type checking, unit tests, and integration tests. Merges to main auto-deploy to staging, production deploys require manual approval.",
+    "charCount": 216
+  },
+  {
+    "id": "chunk-023",
+    "doc_id": "meeting-2025-01-15",
+    "ts_start": 305,
+    "ts_end": 320,
+    "speaker": "Frank",
+    "text": "Container images should be built with multi-stage Dockerfiles to minimize image size. We'll use distroless base images for production and scan all images for vulnerabilities with Trivy before deployment.",
+    "charCount": 203
+  },
+  {
+    "id": "chunk-024",
+    "doc_id": "meeting-2025-01-15",
+    "ts_start": 320,
+    "ts_end": 335,
+    "speaker": "Bob",
+    "text": "Blue-green deployments will be our strategy for zero-downtime releases. We need automated rollback capability that triggers if error rates exceed one percent within five minutes of a new deployment.",
+    "charCount": 198
+  },
+  {
+    "id": "chunk-025",
+    "doc_id": "meeting-2025-01-15",
+    "ts_start": 335,
+    "ts_end": 348,
+    "speaker": "Frank",
+    "text": "Secrets management is handled through HashiCorp Vault. Application secrets are injected at runtime via environment variables, never stored in the container image or source code repository.",
+    "charCount": 188
+  },
+  {
+    "id": "chunk-026",
+    "doc_id": "meeting-2025-01-15",
+    "ts_start": 348,
+    "ts_end": 363,
+    "speaker": "Carol",
+    "text": "Unit tests should cover all business logic with at least eighty percent code coverage. We'll use Jest for JavaScript testing and pytest for the Python microservices. Test files should live next to the code they test.",
+    "charCount": 216
+  },
+  {
+    "id": "chunk-027",
+    "doc_id": "meeting-2025-01-15",
+    "ts_start": 363,
+    "ts_end": 378,
+    "speaker": "Alice",
+    "text": "Integration tests will verify API contracts using Supertest. We need a dedicated test database that gets reset before each test suite. Database seeders should create a consistent test dataset.",
+    "charCount": 192
+  },
+  {
+    "id": "chunk-028",
+    "doc_id": "meeting-2025-01-15",
+    "ts_start": 378,
+    "ts_end": 393,
+    "speaker": "Eve",
+    "text": "End-to-end testing will use Playwright for browser automation. We'll test critical user flows like signup, login, creating a project, and inviting team members. E2E tests run nightly against the staging environment.",
+    "charCount": 215
+  },
+  {
+    "id": "chunk-029",
+    "doc_id": "meeting-2025-01-15",
+    "ts_start": 393,
+    "ts_end": 408,
+    "speaker": "Bob",
+    "text": "Load testing should be performed before each major release. We'll use k6 to simulate realistic traffic patterns and identify bottlenecks. The target is to sustain five hundred requests per second with less than one percent error rate.",
+    "charCount": 234
+  },
+  {
+    "id": "chunk-030",
+    "doc_id": "meeting-2025-01-15",
+    "ts_start": 408,
+    "ts_end": 420,
+    "speaker": "Carol",
+    "text": "Test data management needs a strategy. We should use factory functions to generate test fixtures, avoid sharing state between tests, and ensure all tests can run in parallel without conflicts.",
+    "charCount": 192
+  },
+  {
+    "id": "chunk-031",
+    "doc_id": "meeting-2025-01-15",
+    "ts_start": 420,
+    "ts_end": 436,
+    "speaker": "Dave",
+    "text": "The real-time features will use WebSockets via Socket.io. We need presence indicators showing who's online, live cursor positions for collaborative editing, and instant notifications for mentions and comments.",
+    "charCount": 209
+  },
+  {
+    "id": "chunk-032",
+    "doc_id": "meeting-2025-01-15",
+    "ts_start": 436,
+    "ts_end": 452,
+    "speaker": "Alice",
+    "text": "For the search functionality, we'll implement Elasticsearch for full-text search across documents and projects. The search index will be updated asynchronously via a message queue to avoid impacting write performance.",
+    "charCount": 217
+  },
+  {
+    "id": "chunk-033",
+    "doc_id": "meeting-2025-01-15",
+    "ts_start": 452,
+    "ts_end": 468,
+    "speaker": "Frank",
+    "text": "File uploads will be stored in S3 with server-side encryption. We'll generate pre-signed URLs for direct uploads from the browser. File type validation and virus scanning should happen before files become accessible.",
+    "charCount": 216
+  },
+  {
+    "id": "chunk-034",
+    "doc_id": "meeting-2025-01-15",
+    "ts_start": 468,
+    "ts_end": 482,
+    "speaker": "Dave",
+    "text": "The notification system should support email, in-app notifications, and push notifications. Users can configure their preferences per notification type. We'll batch email notifications to avoid spamming users.",
+    "charCount": 209
+  },
+  {
+    "id": "chunk-035",
+    "doc_id": "meeting-2025-01-15",
+    "ts_start": 482,
+    "ts_end": 496,
+    "speaker": "Bob",
+    "text": "API versioning will follow URL-based versioning with a v1 prefix. Breaking changes require a new version. We'll maintain backward compatibility for at least six months after deprecating an API version.",
+    "charCount": 201
+  },
+  {
+    "id": "chunk-036",
+    "doc_id": "meeting-2025-01-15",
+    "ts_start": 496,
+    "ts_end": 512,
+    "speaker": "Alice",
+    "text": "Error handling should be consistent across all API endpoints. We'll use RFC 7807 Problem Details format for error responses. Every error includes a unique error code, human-readable message, and correlation ID for debugging.",
+    "charCount": 224
+  },
+  {
+    "id": "chunk-037",
+    "doc_id": "meeting-2025-01-15",
+    "ts_start": 512,
+    "ts_end": 528,
+    "speaker": "Frank",
+    "text": "Logging standards need to be established. All services should output structured JSON logs. We need correlation IDs that propagate across service boundaries for distributed tracing. Logs are shipped to Elasticsearch via Fluentd.",
+    "charCount": 227
+  },
+  {
+    "id": "chunk-038",
+    "doc_id": "meeting-2025-01-15",
+    "ts_start": 528,
+    "ts_end": 544,
+    "speaker": "Carol",
+    "text": "Data privacy and GDPR compliance are essential. We need to implement data export functionality, right-to-deletion workflows, and consent management. All personally identifiable information must be encrypted at rest.",
+    "charCount": 215
+  },
+  {
+    "id": "chunk-039",
+    "doc_id": "meeting-2025-01-15",
+    "ts_start": 544,
+    "ts_end": 560,
+    "speaker": "Eve",
+    "text": "The mobile app will be built using React Native to share code with the web frontend. We'll prioritize the iOS version first and target Android release two months later. Push notifications are critical for mobile engagement.",
+    "charCount": 223
+  },
+  {
+    "id": "chunk-040",
+    "doc_id": "meeting-2025-01-15",
+    "ts_start": 560,
+    "ts_end": 575,
+    "speaker": "Carol",
+    "text": "Documentation should include API reference docs generated from OpenAPI specs, architecture decision records for major technical choices, and runbooks for common operational procedures and incident response.",
+    "charCount": 206
+  }
+]

@@ -1,0 +1,33 @@
+{
+  "name": "rag-web-app",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview",
+    "copy-artifacts": "cp -r ../artifacts/* public/artifacts/ 2>/dev/null || echo 'Run indexer first to generate artifacts'",
+    "test:models": "npx playwright test model-comparison --reporter=list",
+    "test:baseline": "npx playwright test pack-only-baseline --reporter=list",
+    "test:report": "npx tsx scripts/generate-report.ts",
+    "test:think-tags": "npx playwright test think-tag-stripping --reporter=list",
+    "test:tts-sync": "npx playwright test tts-display-sync --reporter=list",
+    "test:token-budget": "npx playwright test token-budget --reporter=list",
+    "test:usability": "npx playwright test usability-flow --reporter=list",
+    "test:diagnostic": "npx playwright test diagnostic-snapshot --reporter=list",
+    "test:all": "npx playwright test --reporter=list",
+    "index-meta": "npx tsx ../scripts/index-sessions.ts > public/conversation_pack/meta_knowledge.jsonl"
+  },
+  "dependencies": {
+    "@diffusionstudio/vits-web": "^1.0.3",
+    "@huggingface/transformers": "^3.4.0",
+    "@mlc-ai/web-llm": "^0.2.78"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.58.2",
+    "@types/node": "^20.11.0",
+    "typescript": "^5.3.3",
+    "vite": "^5.4.0"
+  }
+}

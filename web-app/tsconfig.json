@@ -1,0 +1,18 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "esModuleInterop": true,
+    "strict": true,
+    "outDir": "./dist",
+    "rootDir": "..",
+    "resolveJsonModule": true,
+    "skipLibCheck": true,
+    "lib": ["ES2022", "DOM", "DOM.Iterable", "WebWorker"],
+    "paths": {
+      "@shared/*": ["../shared/*"]
+    }
+  },
+  "include": ["src/**/*", "../shared/**/*"]
+}

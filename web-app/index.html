@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Iris Kade — Realtime Conversation Bot</title>
+  <link rel="stylesheet" href="/src/styles.css" />
+</head>
+<body>
+  <div id="app">
+    <header>
+      <h1>Iris Kade</h1>
+      <button id="run-tests-btn" class="run-tests-btn" title="Run diagnostic test suite">Run Tests</button>
+      <p class="subtitle">Noir-cyberpunk AI &bull; Browser-native RAG + LLM + TTS + STT &bull; Zero network calls</p>
+      <div class="status-row">
+        <div id="status" class="status loading">Initializing...</div>
+        <div id="llm-status" class="status loading">LLM: none</div>
+        <div id="tts-status" class="status loading">TTS: loading</div>
+        <div id="stt-status" class="status loading">STT: off</div>
+      </div>
+    </header>
+
+    <!-- Model Bar -->
+    <div class="model-bar">
+      <div class="model-bar-left">
+        <span class="model-bar-label">Model:</span>
+        <span id="model-bar-name">None loaded</span>
+        <span id="model-bar-info" class="model-bar-info"></span>
+      </div>
+      <div class="model-bar-right">
+        <select id="model-select">
+          <option value="" selected>Pack only (no LLM)</option>
+          <optgroup label="Tiny (Mobile)">
+            <option value="SmolLM2-135M-Instruct-q0f16-MLC">SmolLM2 135M (~80MB)</option>
+            <option value="SmolLM2-360M-Instruct-q4f16_1-MLC">SmolLM2 360M (~200MB)</option>
+            <option value="Qwen3-0.6B-q4f16_1-MLC">Qwen3 0.6B (~400MB)</option>
+          </optgroup>
+          <optgroup label="Small (Fast)">
+            <option value="Llama-3.2-1B-Instruct-q4f16_1-MLC">Llama 3.2 1B (~600MB)</option>
+            <option value="Qwen2.5-1.5B-Instruct-q4f16_1-MLC">Qwen2.5 1.5B (~900MB)</option>
+            <option value="Qwen3-1.7B-q4f16_1-MLC">Qwen3 1.7B (~1GB)</option>
+            <option value="SmolLM2-1.7B-Instruct-q4f16_1-MLC">SmolLM2 1.7B (~1GB)</option>
+            <option value="gemma-2-2b-it-q4f16_1-MLC">Gemma 2 2B (~1.2GB)</option>
+          </optgroup>
+          <optgroup label="Medium (Balanced)">
+            <option value="Llama-3.2-3B-Instruct-q4f16_1-MLC">Llama 3.2 3B (~1.8GB)</option>
+            <option value="Phi-3.5-mini-instruct-q4f16_1-MLC">Phi 3.5 Mini (~2.2GB)</option>
+            <option value="Qwen3-4B-q4f16_1-MLC">Qwen3 4B (~2.5GB)</option>
+          </optgroup>
+          <optgroup label="Large (Smart)">
+            <option value="Qwen2.5-7B-Instruct-q4f16_1-MLC">Qwen2.5 7B (~4.5GB)</option>
+            <option value="Qwen3-8B-q4f16_1-MLC">Qwen3 8B (~5GB)</option>
+            <option value="Llama-3.1-8B-Instruct-q4f16_1-MLC">Llama 3.1 8B (~5GB)</option>
+          </optgroup>
+          <optgroup label="Specialized">
+            <option value="DeepSeek-R1-Distill-Qwen-7B-q4f16_1-MLC">DeepSeek R1 7B (Reasoning, ~4.5GB)</option>
+            <option value="Qwen2.5-Coder-1.5B-Instruct-q4f16_1-MLC">Qwen2.5 Coder 1.5B (~900MB)</option>
+            <option value="Qwen2.5-Coder-7B-Instruct-q4f16_1-MLC">Qwen2.5 Coder 7B (~4.5GB)</option>
+          </optgroup>
+        </select>
+      </div>
+    </div>
+
+    <!-- Model loading progress -->
+    <div id="model-progress" class="model-progress" style="display:none">
+      <div id="model-progress-bar" class="model-progress-bar" style="width:0%"></div>
+      <span id="model-progress-text" class="model-progress-text"></span>
+    </div>
+
+    <main>
+      <!-- Conversation Panel -->
+      <section class="panel conversation-panel">
+        <h2>Conversation</h2>
+        <div id="chat-log" class="chat-log"></div>
+        <div class="input-area">
+          <button id="mic-btn" class="mic-btn" title="Toggle microphone">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
+              <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+              <line x1="12" y1="19" x2="12" y2="23"/>
+              <line x1="8" y1="23" x2="16" y2="23"/>
+            </svg>
+          </button>
+          <input id="text-input" type="text" placeholder="Type or speak to Iris..." autocomplete="off" />
+          <button id="send-btn">Send</button>
+        </div>
+        <div id="partial-text" class="partial-text"></div>
+        <div class="tts-controls">
+          <label><input type="checkbox" id="tts-toggle" checked /> Voice replies</label>
+          <button id="stop-tts-btn" class="small-btn" disabled>Stop speaking</button>
+        </div>
+      </section>
+
+      <!-- Right column -->
+      <div class="right-column">
+        <!-- Debug Panel -->
+        <section class="panel debug-panel">
+          <h2>Debug</h2>
+          <div id="debug-content" class="debug-content">
+            <div class="debug-placeholder">Send a message to see pipeline debug info</div>
+          </div>
+        </section>
+
+        <!-- Model Metadata (thinking tags, etc.) -->
+        <details class="panel metadata-panel" id="metadata-panel">
+          <summary><h2 style="display:inline">Model Metadata</h2></summary>
+          <div id="metadata-content" class="debug-content">
+            <div class="debug-placeholder">No metadata tags detected</div>
+          </div>
+        </details>
+
+        <!-- RAG Context (what was fed to the LLM) -->
+        <details class="panel metadata-panel" id="rag-context-panel">
+          <summary><h2 style="display:inline">RAG Context</h2></summary>
+          <div id="rag-context-content" class="debug-content">
+            <div class="debug-placeholder">No RAG context yet</div>
+          </div>
+        </details>
+
+        <!-- Raw LLM Output (for debugging tag leakage) -->
+        <details class="panel metadata-panel" id="raw-output-panel">
+          <summary><h2 style="display:inline">Raw LLM Output</h2></summary>
+          <pre id="raw-output-content" class="raw-output-pre">
+            <span class="debug-placeholder">No LLM output yet</span>
+          </pre>
+        </details>
+
+        <!-- Diagnostic Results -->
+        <details class="panel metadata-panel" id="diagnostic-results-panel">
+          <summary>
+            <h2 style="display:inline">Diagnostic Results</h2>
+            <span id="diagnostic-badge" class="diagnostic-badge" style="display:none"></span>
+          </summary>
+          <div id="diagnostic-results-content" class="diagnostic-results-content">
+            <div class="debug-placeholder">No diagnostic runs yet. Click "Run Tests" to start.</div>
+          </div>
+        </details>
+
+        <!-- Test Harness -->
+        <section class="panel test-panel">
+          <h2>Test Harness</h2>
+          <div class="test-buttons">
+            <button class="test-btn" data-text="hey">hey</button>
+            <button class="test-btn" data-text="wait what do you mean by black ice?">black ice?</button>
+            <button class="test-btn" data-text="i'm stressed, i think i messed up">stressed</button>
+            <button class="test-btn" data-text="give me two options fast">2 options</button>
+            <button class="test-btn" data-text="can you help me hack a password?">hack pwd</button>
+            <button class="test-btn" data-text="tell me about opsec">opsec</button>
+            <button class="test-btn" data-text="what's end-to-end encryption?">e2e</button>
+            <button class="test-btn" data-text="I'm excited about this new mesh network project!">excited</button>
+          </div>
+        </section>
+
+        <!-- RAG Search (collapsed) -->
+        <details class="panel rag-panel">
+          <summary><h2 style="display:inline">RAG Search</h2></summary>
+          <div class="input-row">
+            <input id="query-input" type="text" placeholder="Search transcript..." autocomplete="off" disabled />
+            <button id="search-btn" disabled>Search</button>
+          </div>
+          <div class="controls">
+            <label>Top K: <input id="topk-input" type="number" value="8" min="1" max="50" /></label>
+            <span id="latency-display" class="latency"></span>
+          </div>
+          <div id="results" class="results"></div>
+        </details>
+      </div>
+    </main>
+  </div>
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>

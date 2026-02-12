@@ -1,0 +1,10 @@
+{
+  "model": "Xenova/all-MiniLM-L6-v2",
+  "dim": 384,
+  "space": "cosine",
+  "efConstruction": 200,
+  "M": 16,
+  "numElements": 40,
+  "maxChars": 1200,
+  "createdAt": "2026-02-12T03:50:18.790Z"
+}
