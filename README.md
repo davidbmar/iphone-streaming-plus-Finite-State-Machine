@@ -2,6 +2,8 @@
 
 Stream generated audio from a Mac host to an iPhone browser client via WebRTC, with TURN relay support for NAT traversal.
 
+![WebRTC Speaker — Connected](docs/screenshots/webrtc-speaker-connected.png)
+
 ## Architecture
 
 ```
