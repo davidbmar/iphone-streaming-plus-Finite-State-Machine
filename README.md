@@ -19,6 +19,7 @@ Works with **Ollama** (free, local), **Claude** (Anthropic API), or **OpenAI** �
 │  │            │    │                               │ │
 │  │ Piper TTS  │───▶│  aiohttp server (:8080)       │ │
 │  │ 22kHz→48kHz│    │  ├─ GET /  → index.html       │ │
+│  │            │    │  ├─ GET /health → JSON         │ │
 │  │            │    │  ├─ GET /ws → WebSocket        │ │
 │  │ Whisper STT│◀───│  │    signaling + agent loop   │ │
 │  │ 48kHz→16kHz│    │  └─ RTCPeerConnection          │ │
@@ -100,34 +101,39 @@ open http://localhost:8080
 
 ## Usage
 
-### Local (Mac browser)
+### Recommended: Unified Launcher
 
 ```bash
-bash scripts/test_local.sh
-# Opens http://localhost:8080
+bash scripts/run.sh
 ```
 
-### LAN (iPhone on same Wi-Fi)
+Interactive launcher that handles Python detection, mode selection, and health checks:
+
+```
+How do you want to connect?
+  1) Local      — http://localhost:8080 (Mac browser)
+  2) LAN/WiFi   — https://<ip>:8080 (iPhone on same WiFi)
+  3) Cellular   — Cloudflare Tunnel (iPhone on cell network)
+```
+
+- **Robust Python detection** — tries multiple Python paths and verifies dependencies can be imported
+- **Health check** — confirms the server is actually responding (not just the port is open)
+- **QR code** — displayed in terminal for LAN and cellular modes (install `brew install qrencode` or `pip install qrcode`)
+- **Cleanup** — kills server and tunnel processes on Ctrl+C
+
+### Individual Scripts (still work)
 
 ```bash
-bash scripts/test_lan.sh
+bash scripts/test_local.sh      # Local browser test
+bash scripts/test_lan.sh        # iPhone on same Wi-Fi
+bash scripts/test_cellular.sh   # iPhone on cellular (cloudflared tunnel)
 ```
 
-Starts HTTPS server with a self-signed cert (required for mic access), detects your LAN IP, and prints a URL + QR code. On your iPhone:
+### LAN / Cellular Notes
 
-1. Open the `https://192.168.x.x:8080` URL in Safari
-2. Tap through the certificate warning: **Show Details** → **visit this website** → **Visit Website**
-3. Enter the auth token and tap **Connect**
-4. Hold the green button to talk, release to send
+**LAN:** Uses self-signed HTTPS cert (required for mic access). On first visit in Safari, tap **Show Details** → **visit this website** → **Visit Website**.
 
-### Cellular (iPhone on AT&T / any network)
-
-```bash
-brew install cloudflared   # one-time setup
-bash scripts/test_cellular.sh
-```
-
-Starts a Cloudflare Tunnel providing a public HTTPS URL. Open the `https://xxx.trycloudflare.com` URL on your iPhone. TURN relay (Twilio) is recommended for reliable cellular NAT traversal.
+**Cellular:** Requires `brew install cloudflared`. TURN relay (Twilio) recommended for reliable NAT traversal.
 
 ## Signaling Protocol (WebSocket JSON)
 
@@ -171,7 +177,7 @@ Client                          Server
 │   └── conversation.py      # Conversation history (10-turn window)
 │
 ├── gateway/                 # Server + WebRTC layer
-│   ├── server.py            # aiohttp HTTP/HTTPS + WS + agent loop
+│   ├── server.py            # aiohttp HTTP/HTTPS + WS + agent loop + /health
 │   ├── webrtc.py            # Session, RTCPeerConnection, mic, TTS queue
 │   ├── turn.py              # Twilio TURN credential fetching
 │   ├── cert.py              # Self-signed HTTPS cert for LAN testing
@@ -186,6 +192,7 @@ Client                          Server
 │   └── styles.css           # Mobile-first dark theme
 │
 ├── scripts/                 # Testing & tooling
+│   ├── run.sh               # Unified launcher (recommended)
 │   ├── smoke_test.py        # Headless TTS + STT pipeline test
 │   ├── test_local.sh        # Local browser test
 │   ├── test_lan.sh          # iPhone on same Wi-Fi
