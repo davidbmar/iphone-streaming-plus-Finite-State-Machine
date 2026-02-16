@@ -1,4 +1,4 @@
-"""Voice assistant REPL — text-only Phase 1 entry point.
+"""Voice assistant REPL — text-only entry point.
 
 Run with: python -m voice_assistant.main [--debug]
 
@@ -19,8 +19,12 @@ import sys
 from rich.console import Console
 from rich.text import Text
 
+from engine.orchestrator import Orchestrator, OrchestratorConfig
+from engine.llm import list_ollama_models, pull_ollama_model
+
 from .config import settings
-from .orchestrator import Orchestrator
+from .tool_router import dispatch_tool_call
+from .tools import get_all_schemas
 
 console = Console()
 
@@ -32,98 +36,109 @@ def _setup_logging(debug: bool) -> None:
         format="%(asctime)s %(name)-14s %(levelname)-7s %(message)s",
         datefmt="%H:%M:%S",
     )
-    # Suppress noisy HTTP-level debug logs — we only want orchestrator/tool logs
     if debug:
         logging.getLogger("httpx").setLevel(logging.WARNING)
         logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 
-def _tool_call_callback(name: str, args: dict) -> None:
+async def _tool_call_callback(name: str, args: dict) -> None:
     """Display tool calls in real time."""
     args_str = ", ".join(f"{k}={v!r}" for k, v in args.items()) if args else ""
     console.print(f"  [cyan dim]tool:[/] [cyan]{name}[/]({args_str})")
 
 
-async def _pull_model_interactive(orchestrator: Orchestrator, model: str) -> bool:
-    """Prompt user and pull a model with progress display."""
-    console.print(f"\n[yellow]Model '{model}' is not installed.[/]")
-    try:
-        answer = console.input("[yellow]Pull it now? (y/n): [/]").strip().lower()
-    except (EOFError, KeyboardInterrupt):
-        return False
+async def _ensure_ollama_model() -> str:
+    """Check Ollama for preferred model, fall back, or offer to pull.
 
-    if answer not in ("y", "yes"):
-        return False
+    Returns the active model name, or "" if none available.
+    """
+    installed = await list_ollama_models()
+    installed_names: set[str] = set()
+    for m in installed:
+        installed_names.add(m["name"])
+        if m["name"].endswith(":latest"):
+            installed_names.add(m["name"][:-7])
 
-    console.print(f"[dim]Pulling {model}... this may take a few minutes.[/]")
-    try:
-        last_status = ""
-        async for progress in orchestrator.pull_model(model):
-            status = progress.get("status", "")
-            if status != last_status:
-                console.print(f"  [dim]{status}[/]")
-                last_status = status
-        console.print(f"[green]Model '{model}' ready.[/]\n")
-        return True
-    except Exception as e:
-        console.print(f"[red]Pull failed: {e}[/]")
-        return False
+    # Check preferred, then fallback
+    if settings.ollama_model in installed_names:
+        return settings.ollama_model
+    if settings.ollama_fallback_model in installed_names:
+        console.print(f"[yellow]Preferred model '{settings.ollama_model}' not found, "
+                       f"using fallback '{settings.ollama_fallback_model}'[/]")
+        return settings.ollama_fallback_model
+
+    # Offer to pull
+    for model_name in (settings.ollama_model, settings.ollama_fallback_model):
+        console.print(f"\n[yellow]Model '{model_name}' is not installed.[/]")
+        try:
+            answer = console.input("[yellow]Pull it now? (y/n): [/]").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            return ""
+        if answer not in ("y", "yes"):
+            continue
+        console.print(f"[dim]Pulling {model_name}... this may take a few minutes.[/]")
+        try:
+            last_status = ""
+            async for progress in pull_ollama_model(model_name):
+                status = progress.get("status", "")
+                if status != last_status:
+                    console.print(f"  [dim]{status}[/]")
+                    last_status = status
+            console.print(f"[green]Model '{model_name}' ready.[/]\n")
+            return model_name
+        except Exception as e:
+            console.print(f"[red]Pull failed: {e}[/]")
+
+    return ""
 
 
 async def _run_repl() -> None:
-    orchestrator = Orchestrator()
+    # Ensure Ollama model is available
+    active_model = await _ensure_ollama_model()
+    if not active_model:
+        console.print("[red]No model available. Install one with: ollama pull qwen3:8b[/]")
+        return
 
-    try:
-        # Ensure model is available
-        active = await orchestrator.ensure_model()
-        if not active:
-            # Offer to pull preferred model
-            pulled = await _pull_model_interactive(orchestrator, settings.ollama_model)
-            if pulled:
-                active = await orchestrator.ensure_model()
-            if not active:
-                # Try fallback
-                pulled = await _pull_model_interactive(orchestrator, settings.ollama_fallback_model)
-                if pulled:
-                    active = await orchestrator.ensure_model()
-            if not active:
-                console.print("[red]No model available. Install one with: ollama pull qwen3:8b[/]")
-                return
+    # Build orchestrator with Ollama config + tool registry
+    config = OrchestratorConfig(
+        provider="ollama",
+        model=active_model,
+        tools=get_all_schemas(),
+        dispatch=dispatch_tool_call,
+        max_iterations=settings.max_tool_calls_per_turn,
+        max_history=settings.max_history_messages,
+        on_tool_call=_tool_call_callback,
+    )
+    orchestrator = Orchestrator(config=config)
 
-        console.print(f"[bold]Voice Assistant[/] [dim]({active})[/]")
-        console.print("[dim]Type 'quit' to exit, 'clear' to reset conversation.[/]\n")
+    console.print(f"[bold]Voice Assistant[/] [dim]({active_model})[/]")
+    console.print("[dim]Type 'quit' to exit, 'clear' to reset conversation.[/]\n")
 
-        while True:
+    while True:
+        try:
+            user_input = console.input("[bold green]You:[/] ").strip()
+        except (EOFError, KeyboardInterrupt):
+            console.print("\n[dim]Goodbye![/]")
+            break
+
+        if not user_input:
+            continue
+        if user_input.lower() in ("quit", "exit", "q"):
+            console.print("[dim]Goodbye![/]")
+            break
+        if user_input.lower() == "clear":
+            orchestrator.clear_history()
+            console.print("[dim]Conversation cleared.[/]\n")
+            continue
+
+        with console.status("[dim]Thinking...[/]", spinner="dots"):
             try:
-                user_input = console.input("[bold green]You:[/] ").strip()
-            except (EOFError, KeyboardInterrupt):
-                console.print("\n[dim]Goodbye![/]")
-                break
-
-            if not user_input:
-                continue
-            if user_input.lower() in ("quit", "exit", "q"):
-                console.print("[dim]Goodbye![/]")
-                break
-            if user_input.lower() == "clear":
-                orchestrator.clear_history()
-                console.print("[dim]Conversation cleared.[/]\n")
+                response = await orchestrator.chat(user_input)
+            except Exception as e:
+                console.print(f"[red]Error: {e}[/]\n")
                 continue
 
-            with console.status("[dim]Thinking...[/]", spinner="dots"):
-                try:
-                    response = await orchestrator.chat(
-                        user_input,
-                        on_tool_call=_tool_call_callback,
-                    )
-                except Exception as e:
-                    console.print(f"[red]Error: {e}[/]\n")
-                    continue
-
-            console.print(f"[bold blue]Assistant:[/] {response}\n")
-
-    finally:
-        await orchestrator.close()
+        console.print(f"[bold blue]Assistant:[/] {response}\n")
 
 
 def main() -> None:

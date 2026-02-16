@@ -278,13 +278,18 @@ def test_split_sentences():
 def test_hedging_detection():
     section("Hedging Detection (_reply_is_hedging)")
     try:
-        from gateway.server import _reply_is_hedging
-    except ImportError as e:
-        for name in ["detects 'my knowledge cutoff'", "detects 'as an ai'",
-                     "detects 'don't have access'", "non-hedging passes through",
-                     "case insensitive detection"]:
-            skip(name, f"gateway.server deps: {e}")
-        return
+        from engine.orchestrator import Orchestrator
+        orch = Orchestrator()
+        _reply_is_hedging = orch._reply_is_hedging
+    except ImportError:
+        try:
+            from gateway.server import _reply_is_hedging
+        except ImportError as e:
+            for name in ["detects 'my knowledge cutoff'", "detects 'as an ai'",
+                         "detects 'don't have access'", "non-hedging passes through",
+                         "case insensitive detection"]:
+                skip(name, f"deps: {e}")
+            return
 
     try:
         # Known hedging phrases
@@ -413,7 +418,16 @@ def test_ice_servers_to_rtc():
 def test_orchestrator_helpers():
     section("Orchestrator helpers (_strip_thinking, _parse_text_tool_calls)")
     try:
-        from voice_assistant.orchestrator import Orchestrator
+        from engine.orchestrator import Orchestrator
+    except ImportError:
+        try:
+            from voice_assistant.orchestrator import Orchestrator
+        except ImportError as e:
+            skip("Orchestrator helpers (deps missing)", str(e))
+            return
+
+    try:
+        orch = Orchestrator()
 
         # _strip_thinking
         report("strips <think> blocks",
@@ -424,26 +438,106 @@ def test_orchestrator_helpers():
                Orchestrator._strip_thinking(
                    "<think>\nline1\nline2\n</think>Result") == "Result")
 
-        # _parse_text_tool_calls
+        # _parse_text_tool_calls (instance method now, uses config.tool_aliases)
         text = 'gc_search {"query": "weather in Austin"}'
-        calls = Orchestrator._parse_text_tool_calls(text)
+        calls = orch._parse_text_tool_calls(text)
         report("parses text tool call",
                len(calls) == 1 and calls[0]["function"]["name"] == "web_search",
                f"got {len(calls)} calls")
 
         # Unknown tool name should not match
-        calls2 = Orchestrator._parse_text_tool_calls('unknown_fn {"x": 1}')
+        calls2 = orch._parse_text_tool_calls('unknown_fn {"x": 1}')
         report("ignores unknown tool names", len(calls2) == 0)
 
         # Alias: "search" → "web_search"
-        calls3 = Orchestrator._parse_text_tool_calls('search {"query": "test"}')
+        calls3 = orch._parse_text_tool_calls('search {"query": "test"}')
         report("resolves tool aliases",
                len(calls3) == 1 and calls3[0]["function"]["name"] == "web_search")
 
-    except ImportError as e:
-        skip("Orchestrator helpers (pydantic-settings not installed)", str(e))
     except Exception as e:
         report("Orchestrator helpers", False, str(e))
+
+
+# ── 1.10b OrchestratorConfig defaults ────────────────────────
+
+def test_orchestrator_config():
+    section("OrchestratorConfig defaults")
+    try:
+        from engine.orchestrator import OrchestratorConfig, DEFAULT_HEDGING_PHRASES
+
+        cfg = OrchestratorConfig()
+        report("default provider is empty (auto)", cfg.provider == "")
+        report("default max_iterations is 5", cfg.max_iterations == 5)
+        report("default max_history is 20", cfg.max_history == 20)
+        report("hedging_safety_net enabled", cfg.enable_hedging_safety_net is True)
+        report("hedging phrases populated",
+               len(cfg.hedging_phrases) > 30,
+               f"{len(cfg.hedging_phrases)} phrases")
+        report("tool_aliases has gc_search",
+               cfg.tool_aliases.get("gc_search") == "web_search")
+
+        # Override via constructor
+        cfg2 = OrchestratorConfig(provider="claude", max_iterations=3)
+        report("provider override works", cfg2.provider == "claude")
+        report("max_iterations override works", cfg2.max_iterations == 3)
+
+    except ImportError as e:
+        skip("OrchestratorConfig (engine.orchestrator not available)", str(e))
+    except Exception as e:
+        report("OrchestratorConfig tests", False, str(e))
+
+
+# ── 1.10c Orchestrator _trim_history ─────────────────────────
+
+def test_orchestrator_trim_history():
+    section("Orchestrator _trim_history (tool-group preservation)")
+    try:
+        from engine.orchestrator import Orchestrator, OrchestratorConfig
+
+        # Small max_history to make trimming easy to test
+        cfg = OrchestratorConfig(max_history=6)
+        orch = Orchestrator(config=cfg)
+
+        # Build a history with a tool group in the middle:
+        # [user, assistant+tool_calls, tool, user, assistant, user]
+        orch.messages = [
+            {"role": "user", "content": "search weather"},
+            {"role": "assistant", "content": "", "tool_calls": [
+                {"function": {"name": "web_search", "arguments": {"query": "weather"}}}
+            ]},
+            {"role": "tool", "content": "Sunny, 75F"},
+            {"role": "assistant", "content": "It's sunny and 75F."},
+            {"role": "user", "content": "thanks"},
+            {"role": "assistant", "content": "You're welcome!"},
+            {"role": "user", "content": "what about tomorrow"},
+            {"role": "assistant", "content": "Let me check."},
+        ]
+
+        orch._trim_history()
+        report("trim reduces to max_history",
+               len(orch.messages) <= 6,
+               f"got {len(orch.messages)} messages")
+
+        # Verify no orphaned tool message at the start
+        if orch.messages:
+            report("no orphaned tool message at start",
+                   orch.messages[0].get("role") != "tool")
+
+        # Verify tool groups stay together
+        for i, msg in enumerate(orch.messages):
+            if msg.get("role") == "tool":
+                # Previous message should be assistant with tool_calls
+                report("tool msg preceded by assistant+tool_calls",
+                       i > 0 and orch.messages[i - 1].get("tool_calls") is not None)
+                break
+        else:
+            # No tool messages in trimmed result — that's also fine
+            report("trimmed history is coherent (no tool groups)", True)
+
+    except ImportError as e:
+        skip("_trim_history (engine.orchestrator not available)", str(e))
+    except Exception as e:
+        report("_trim_history tests", False, str(e))
 
 
 # ── 1.11 _clean_html ────────────────────────────────────────
@@ -973,6 +1067,8 @@ def main():
     test_build_tool_result_messages()
     test_ice_servers_to_rtc()
     test_orchestrator_helpers()
+    test_orchestrator_config()
+    test_orchestrator_trim_history()
     test_clean_html()
     test_queued_generator()
     test_llm_provider_detection()

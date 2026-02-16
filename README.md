@@ -194,10 +194,11 @@ Client                          Server
 │   ├── tts.py               # Piper TTS (text → 48kHz PCM)
 │   ├── stt.py               # Whisper STT (48kHz PCM → text)
 │   ├── llm.py               # LLM wrapper (Claude / OpenAI / Ollama)
+│   ├── orchestrator.py      # Unified chat loop (tool calling, hedging, callbacks)
 │   └── conversation.py      # Conversation history (10-turn window)
 │
 ├── gateway/                 # Server + WebRTC layer
-│   ├── server.py            # aiohttp HTTP/HTTPS + WS + agent loop + /health
+│   ├── server.py            # aiohttp HTTP/HTTPS + WS signaling + /health
 │   ├── webrtc.py            # Session, RTCPeerConnection, mic, TTS queue
 │   ├── turn.py              # Twilio TURN credential fetching
 │   ├── cert.py              # Self-signed HTTPS cert for LAN testing
@@ -212,7 +213,7 @@ Client                          Server
 │   └── styles.css           # Mobile-first dark theme
 │
 ├── voice_assistant/          # Standalone CLI voice agent
-│   ├── orchestrator.py      # Tool-calling loop (Ollama, 5 iterations)
+│   ├── orchestrator.py      # Backwards-compat shim → engine/orchestrator.py
 │   ├── config.py            # Settings (pydantic-settings)
 │   ├── tool_router.py       # Tool dispatch
 │   ├── main.py              # CLI REPL entry point

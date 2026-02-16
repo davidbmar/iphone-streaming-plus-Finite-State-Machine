@@ -16,6 +16,8 @@ python -m gateway.server      # http://localhost:8080
 ## Architecture
 
 ```
+engine/orchestrator.py → Unified chat loop (tools, hedging, callbacks)
+engine/llm.py          → Multi-provider LLM wrapper (Claude/OpenAI/Ollama)
 engine/tts.py          → Piper TTS (text → 48kHz PCM)
 gateway/audio/         → PCMRingBuffer + WebRTCAudioSource
 gateway/webrtc.py      → aiortc PeerConnection lifecycle

@@ -1,6 +1,6 @@
 # ADR-0001: Unify Agent Loops into Single Orchestrator
 
-Status: Proposed
+Status: Accepted
 Date: 2026-02-16
 
 ## Context
@@ -136,6 +136,7 @@ calling silently fails in the web UI for ~40% of users.
 
 Sessions:
 - S-2026-02-16-1627-test-suite-orchestrator-plan
+- S-2026-02-16-1653-orchestrator-unification
 
 Commits:
-- (pending) orchestrator unification implementation
+- (see S-2026-02-16-1653 session) orchestrator unification implementation

@@ -13,11 +13,7 @@ from dotenv import load_dotenv
 load_dotenv()  # Must be before engine imports so they see .env vars
 
 from engine.tts import list_voices, DEFAULT_VOICE
-from engine.conversation import ConversationHistory
 from engine.llm import (
-    generate as llm_generate,
-    generate_with_tools as llm_generate_with_tools,
-    build_tool_result_messages,
     is_configured as llm_is_configured,
     get_provider_name,
     available_providers,
@@ -30,6 +26,7 @@ from engine.search import (
     get_quota_status,
     is_configured as search_is_configured,
 )
+from engine.orchestrator import Orchestrator, OrchestratorConfig
 from gateway.turn import fetch_twilio_turn_credentials
 
 log = logging.getLogger("gateway")
@@ -41,6 +38,8 @@ ICE_SERVERS_JSON = os.getenv("ICE_SERVERS_JSON", "[]")
 WEB_DIR = Path(__file__).resolve().parent.parent / "web"
 INDEX_TEMPLATE = None  # Loaded on startup
 _START_TIME = None  # Set on app creation
+
+LOOKUP_PHRASE = "Let me look that up."
 
 
 def build_index_html() -> str:
@@ -69,7 +68,7 @@ async def handle_quota(request: web.Request) -> web.Response:
 
 # ── Search tool definition (for native tool calling) ──────────
 
-SEARCH_TOOL = {
+_SEARCH_TOOL = {
     "type": "function",
     "function": {
         "name": "web_search",
@@ -92,109 +91,24 @@ SEARCH_TOOL = {
 }
 
 
-# ── Search classifier (fallback for safety net query extraction) ──
-
-SEARCH_CLASSIFIER_PROMPT = (
-    "Extract a clean web search query from this user message. "
-    "Strip conversational filler and keep only the factual question.\n\n"
-    "Reply with ONLY the search query, nothing else.\n\n"
-    "Examples:\n"
-    "User: 'What is the weather today in Austin?' → weather in Austin today\n"
-    "User: 'Yes, look that up, what's the S&P 500?' → S&P 500 current price\n"
-    "User: 'Can you tell me who won the Super Bowl?' → who won the Super Bowl"
-)
-
-
-async def _extract_search_query(text: str, provider: str, model: str) -> str:
-    """Extract a clean search query from user text via LLM.
-
-    Used as fallback when the safety net triggers (model hedged without tool use).
-    """
+async def _web_search_dispatch(name: str, args: dict) -> str:
+    """Dispatch function for the orchestrator — executes web_search tool."""
+    if name != "web_search":
+        return f"Error: unknown tool '{name}'"
+    query = args.get("query", "")
+    if not query:
+        return "Error: missing 'query' argument"
     try:
-        reply = await llm_generate(
-            SEARCH_CLASSIFIER_PROMPT,
-            [{"role": "user", "content": text}],
-            provider,
-            model,
-        )
-        query = reply.strip()
-        if len(query) > 5:
-            log.info("Query extraction: %r → %r", text[:50], query[:60])
-            return query
+        result = await web_search(query)
+        if result:
+            context = format_results_for_context(result)
+            log.info("Search via %s: %d results for %r",
+                     result["provider"], len(result["results"]), query[:60])
+            return context
+        return "No search results found."
     except Exception as e:
-        log.warning("Query extraction failed: %s", e)
-    return text  # fallback to raw text
-
-
-# ── Search hedging detection (safety net) ─────────────────────
-
-# Phrases that indicate the LLM is refusing or hedging — trigger search fallback
-_HEDGING_PHRASES = [
-    "don't have access",
-    "don't have real-time",
-    "don't have current",
-    "don't have the ability",
-    "don't have live",
-    "do not have access",
-    "do not have real-time",
-    "do not have current",
-    "do not have the ability",
-    "can't browse",
-    "can't access the internet",
-    "can't access the web",
-    "can't search",
-    "cannot browse",
-    "cannot access the internet",
-    "cannot access the web",
-    "cannot search",
-    "not able to browse",
-    "not able to access",
-    "not able to search",
-    "unable to browse",
-    "unable to access real",
-    "unable to search",
-    "my knowledge cutoff",
-    "my training data",
-    "information is outdated",
-    "data is outdated",
-    "may be outdated",
-    "might be outdated",
-    "as an ai",
-    "as a language model",
-    "as a large language model",
-    "lack access",
-    "beyond my capabilities",
-    "outside my capabilities",
-    "not available to me",
-    "can't actually browse",
-    "can't actually access",
-    "can't actually search",
-    "cannot actually browse",
-    "cannot actually access",
-    "cannot actually search",
-    "don't actually have access",
-    "still under development",
-    "not accessible in real-time",
-    "not accessible in real time",
-    "isn't accessible",
-    "is not accessible",
-    "can't provide real-time",
-    "cannot provide real-time",
-    "can't provide you with real-time",
-    "i can't answer that",
-    "check yahoo finance",
-    "check a financial",
-    "visit a financial",
-    "recommend checking",
-]
-
-LOOKUP_PHRASE = "Let me look that up."
-
-
-def _reply_is_hedging(reply: str) -> bool:
-    """Check if the LLM response contains hedging/refusal phrases."""
-    lower = reply.lower()
-    return any(phrase in lower for phrase in _HEDGING_PHRASES)
+        log.warning("Search dispatch failed: %s", e)
+        return f"Search error: {e}"
 
 
 # ── WebSocket handler ─────────────────────────────────────────
@@ -206,12 +120,43 @@ async def handle_ws(request: web.Request) -> web.WebSocketResponse:
 
     session = None  # Will hold WebRTC Session once created
     ice_servers = []  # Populated on hello, shared with WebRTC session
-    conversation = ConversationHistory()
     agent_mode = llm_is_configured()
     llm_provider = ""  # Empty = use default from env
     llm_model = ""  # Empty = use OLLAMA_MODEL env var
     tts_voice = DEFAULT_VOICE
     search_enabled = True  # User toggle, defaults ON
+
+    # ── Orchestrator setup ────────────────────────────────────
+    use_tools = search_enabled and search_is_configured()
+
+    async def _on_status(status: str) -> None:
+        if not ws.closed:
+            if status == "thinking":
+                await ws.send_json({"type": "agent_thinking"})
+            elif status == "searching":
+                await ws.send_json({"type": "agent_searching"})
+
+    async def _on_tool_call(name: str, args: dict) -> None:
+        if ws.closed:
+            return
+        if name == "web_search" and session:
+            await ws.send_json({"type": "agent_reply", "text": LOOKUP_PHRASE})
+            await session.speak_text(LOOKUP_PHRASE, voice_id=tts_voice)
+            await ws.send_json({"type": "agent_searching"})
+
+    orchestrator = Orchestrator(config=OrchestratorConfig(
+        provider=llm_provider,
+        model=llm_model,
+        tools=[_SEARCH_TOOL] if use_tools else [],
+        dispatch=_web_search_dispatch,
+        on_status=_on_status,
+        on_tool_call=_on_tool_call,
+    ))
+
+    def _refresh_orchestrator_tools():
+        """Update orchestrator tools based on current search toggle."""
+        use = search_enabled and search_is_configured()
+        orchestrator.update_config(tools=[_SEARCH_TOOL] if use else [])
 
     async for raw in ws:
         if raw.type != web.WSMsgType.TEXT:
@@ -245,9 +190,9 @@ async def handle_ws(request: web.Request) -> web.WebSocketResponse:
             if model_catalog["ollama_installed"]:
                 default_provider = "ollama"
                 default_model = model_catalog["ollama_installed"][0]["name"]
-                # Set session state so the agent loop actually uses Ollama
                 llm_provider = "ollama"
                 llm_model = default_model
+                orchestrator.update_config(provider=llm_provider, model=llm_model)
                 log.info("Default model: ollama/%s", default_model)
             else:
                 default_provider = get_provider_name()
@@ -272,7 +217,6 @@ async def handle_ws(request: web.Request) -> web.WebSocketResponse:
             if not sdp:
                 await ws.send_json({"type": "error", "message": "Missing SDP"})
                 continue
-            # Lazy import to avoid loading aiortc until needed
             from gateway.webrtc import Session
             session = Session(ice_servers=ice_servers)
             answer_sdp = await session.handle_offer(sdp)
@@ -305,6 +249,7 @@ async def handle_ws(request: web.Request) -> web.WebSocketResponse:
             provider = msg.get("provider", "")
             if provider in ("claude", "openai", "ollama"):
                 llm_provider = provider
+                orchestrator.update_config(provider=provider)
                 log.info("LLM provider switched to: %s", provider)
                 await ws.send_json({"type": "provider_set", "provider": provider})
             else:
@@ -316,7 +261,8 @@ async def handle_ws(request: web.Request) -> web.WebSocketResponse:
             if provider in ("claude", "openai", "ollama"):
                 llm_provider = provider
                 llm_model = model if provider == "ollama" else ""
-                conversation.clear()
+                orchestrator.update_config(provider=llm_provider, model=llm_model)
+                orchestrator.clear_history()
                 log.info("Model switched: provider=%s, model=%s (conversation cleared)", provider, model)
                 await ws.send_json({"type": "model_set", "provider": provider, "model": model})
             else:
@@ -344,7 +290,6 @@ async def handle_ws(request: web.Request) -> web.WebSocketResponse:
             log.info("Starting model pull: %s", model_name)
             await ws.send_json({"type": "pull_started", "model": model_name})
 
-            # Run pull as background task so the WS message loop stays responsive
             async def _do_pull(ws, model_name):
                 try:
                     async for progress in pull_ollama_model(model_name):
@@ -397,125 +342,11 @@ async def handle_ws(request: web.Request) -> web.WebSocketResponse:
                 await ws.send_json({"type": "transcription", "text": text, "partial": False})
                 log.info("Final transcription: %r", text[:80] if text else "")
 
-                # Agent mode: tool-call → [search?] → reply → [hedging? → search → retry]
+                # Agent mode: orchestrator handles tool-call loop + hedging
                 if agent_mode and text.strip():
-                    conversation.add_turn("user", text)
-                    active_provider = llm_provider or get_provider_name()
-                    use_tools = search_enabled and search_is_configured()
-                    tools = [SEARCH_TOOL] if use_tools else []
-                    messages = conversation.get_messages()
-
-                    await ws.send_json({"type": "agent_thinking"})
-                    log.info("Agent thinking (provider=%s, tools=%d)...",
-                             active_provider, len(tools))
-
+                    _refresh_orchestrator_tools()
                     try:
-                        # ── Primary: generate with tool calling ──
-                        reply, tool_calls = await llm_generate_with_tools(
-                            conversation.system, messages, tools,
-                            llm_provider, llm_model,
-                        )
-
-                        # Handle tool calls (model decided to search)
-                        search_performed = False
-                        if tool_calls:
-                            for i, tc in enumerate(tool_calls):
-                                func = tc.get("function", {})
-                                if func.get("name") == "web_search":
-                                    query = func.get("arguments", {}).get("query", text)
-                                    log.info("Tool call: web_search(%r)", query)
-
-                                    await ws.send_json({"type": "agent_reply",
-                                                        "text": LOOKUP_PHRASE})
-                                    await session.speak_text(LOOKUP_PHRASE,
-                                                             voice_id=tts_voice)
-                                    await ws.send_json({"type": "agent_searching"})
-
-                                    try:
-                                        search_result = await web_search(query)
-                                        if search_result:
-                                            context = format_results_for_context(
-                                                search_result)
-                                            log.info(
-                                                "Search via %s: %d results for %r",
-                                                search_result["provider"],
-                                                len(search_result["results"]),
-                                                query[:60],
-                                            )
-                                            # Build tool result messages
-                                            tool_msgs = build_tool_result_messages(
-                                                active_provider, tool_calls,
-                                                {i: context}, reply,
-                                            )
-                                            await ws.send_json(
-                                                {"type": "agent_thinking"})
-                                            reply, _ = await llm_generate_with_tools(
-                                                conversation.system,
-                                                messages + tool_msgs,
-                                                [],  # no tools on followup
-                                                llm_provider, llm_model,
-                                            )
-                                            search_performed = True
-                                    except Exception as e:
-                                        log.warning("Tool search failed: %s", e)
-
-                        # ── Post-tool hedging: model got results but still refused ──
-                        if (search_performed and _reply_is_hedging(reply)):
-                            log.info("LLM hedged AFTER receiving search results, retrying with directive")
-                            await ws.send_json({"type": "agent_thinking"})
-                            # Re-ask with a strong directive to use the results
-                            directive_msgs = messages + tool_msgs + [{
-                                "role": "user",
-                                "content": (
-                                    "You already searched the web and received results above. "
-                                    "Use those results to answer my question directly. "
-                                    "Do not say you cannot access real-time data — you just did."
-                                ),
-                            }]
-                            reply = await llm_generate(
-                                conversation.system, directive_msgs,
-                                llm_provider, llm_model,
-                            )
-                            log.info("Post-tool retry reply: %r", reply[:80])
-
-                        # ── Safety net: model didn't use tools but hedged ──
-                        if (not search_performed and not tool_calls
-                                and use_tools and _reply_is_hedging(reply)):
-                            log.info("LLM hedged without tools, safety net search")
-                            search_query = await _extract_search_query(
-                                text, llm_provider, llm_model)
-
-                            await ws.send_json({"type": "agent_reply",
-                                                "text": LOOKUP_PHRASE})
-                            await session.speak_text(LOOKUP_PHRASE,
-                                                     voice_id=tts_voice)
-                            await ws.send_json({"type": "agent_searching"})
-                            try:
-                                search_result = await web_search(search_query)
-                                if search_result:
-                                    context = format_results_for_context(
-                                        search_result)
-                                    log.info("Safety net search via %s: %d results",
-                                             search_result["provider"],
-                                             len(search_result["results"]))
-                                    # Inject as assistant message (fallback path)
-                                    search_msgs = messages + [{
-                                        "role": "assistant",
-                                        "content": (
-                                            "I searched the web and found:\n\n"
-                                            + context
-                                            + "\nI'll use these results to answer."
-                                        ),
-                                    }]
-                                    await ws.send_json({"type": "agent_thinking"})
-                                    reply = await llm_generate(
-                                        conversation.system, search_msgs,
-                                        llm_provider, llm_model,
-                                    )
-                            except Exception as e:
-                                log.warning("Safety net search failed: %s", e)
-
-                        conversation.add_turn("assistant", reply)
+                        reply = await orchestrator.chat(text)
                         await ws.send_json({"type": "agent_reply", "text": reply})
                         log.info("Agent reply: %r (voice=%s)", reply[:80], tts_voice)
                         await session.speak_text(reply, voice_id=tts_voice)
@@ -528,6 +359,7 @@ async def handle_ws(request: web.Request) -> web.WebSocketResponse:
 
         elif msg_type == "set_search_enabled":
             search_enabled = msg.get("enabled", True)
+            _refresh_orchestrator_tools()
             log.info("Web search %s by user", "enabled" if search_enabled else "disabled")
             await ws.send_json({"type": "search_enabled_set", "enabled": search_enabled})
 
