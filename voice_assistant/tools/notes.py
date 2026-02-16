@@ -1,7 +1,9 @@
-"""Notes search tool — stub with fake data.
+"""Notes search tool — MOCK (returns hardcoded fake notes).
 
-Returns hardcoded notes to demonstrate multi-tool routing
-and prove the orchestrator handles diverse tool types.
+Demonstrates multi-tool routing. Replace with real notes
+backend (Apple Notes, Obsidian, RAG over local files, etc.).
+
+See backlog: F-004-real-notes-search.md
 """
 
 from typing import Any
@@ -47,5 +49,5 @@ class NotesTool(BaseTool):
                 matches.append(content)
 
         if matches:
-            return f"Notes matching '{query}':\n\n" + "\n\n".join(matches)
+            return f"[MOCK DATA] Notes matching '{query}':\n\n" + "\n\n".join(matches)
         return f"No notes found matching '{query}'."

@@ -21,12 +21,12 @@ from engine.llm import (
     pull_ollama_model,
 )
 from engine.search import (
-    search as web_search,
-    format_results_for_context,
     get_quota_status,
     is_configured as search_is_configured,
 )
 from engine.orchestrator import Orchestrator, OrchestratorConfig
+from voice_assistant.tools import get_all_schemas
+from voice_assistant.tool_router import dispatch_tool_call
 from gateway.turn import fetch_twilio_turn_credentials
 
 log = logging.getLogger("gateway")
@@ -66,51 +66,6 @@ async def handle_quota(request: web.Request) -> web.Response:
     return web.json_response(await get_quota_status())
 
 
-# ── Search tool definition (for native tool calling) ──────────
-
-_SEARCH_TOOL = {
-    "type": "function",
-    "function": {
-        "name": "web_search",
-        "description": (
-            "Search the web for current, real-time information. Use this for "
-            "weather, news, stock prices, sports scores, recent events, current "
-            "dates, driving times, or any facts that may have changed recently."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "query": {
-                    "type": "string",
-                    "description": "A clean, concise web search query",
-                }
-            },
-            "required": ["query"],
-        },
-    },
-}
-
-
-async def _web_search_dispatch(name: str, args: dict) -> str:
-    """Dispatch function for the orchestrator — executes web_search tool."""
-    if name != "web_search":
-        return f"Error: unknown tool '{name}'"
-    query = args.get("query", "")
-    if not query:
-        return "Error: missing 'query' argument"
-    try:
-        result = await web_search(query)
-        if result:
-            context = format_results_for_context(result)
-            log.info("Search via %s: %d results for %r",
-                     result["provider"], len(result["results"]), query[:60])
-            return context
-        return "No search results found."
-    except Exception as e:
-        log.warning("Search dispatch failed: %s", e)
-        return f"Search error: {e}"
-
-
 # ── WebSocket handler ─────────────────────────────────────────
 
 async def handle_ws(request: web.Request) -> web.WebSocketResponse:
@@ -126,8 +81,10 @@ async def handle_ws(request: web.Request) -> web.WebSocketResponse:
     tts_voice = DEFAULT_VOICE
     search_enabled = True  # User toggle, defaults ON
 
-    # ── Orchestrator setup ────────────────────────────────────
-    use_tools = search_enabled and search_is_configured()
+    # ── Orchestrator setup (shared tool registry) ───────────
+    # Tools come from voice_assistant/tools/ — same registry for both UIs.
+    # web_search is real; check_calendar and search_notes are mocks (F-003, F-004).
+    all_tool_schemas = get_all_schemas()
 
     async def _on_status(status: str) -> None:
         if not ws.closed:
@@ -147,16 +104,18 @@ async def handle_ws(request: web.Request) -> web.WebSocketResponse:
     orchestrator = Orchestrator(config=OrchestratorConfig(
         provider=llm_provider,
         model=llm_model,
-        tools=[_SEARCH_TOOL] if use_tools else [],
-        dispatch=_web_search_dispatch,
+        tools=all_tool_schemas if search_is_configured() else [],
+        dispatch=dispatch_tool_call,
         on_status=_on_status,
         on_tool_call=_on_tool_call,
     ))
 
     def _refresh_orchestrator_tools():
         """Update orchestrator tools based on current search toggle."""
-        use = search_enabled and search_is_configured()
-        orchestrator.update_config(tools=[_SEARCH_TOOL] if use else [])
+        if search_enabled and search_is_configured():
+            orchestrator.update_config(tools=all_tool_schemas)
+        else:
+            orchestrator.update_config(tools=[])
 
     async for raw in ws:
         if raw.type != web.WSMsgType.TEXT:

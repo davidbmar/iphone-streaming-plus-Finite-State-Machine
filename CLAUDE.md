@@ -79,15 +79,25 @@ Session: S-YYYY-MM-DD-HHMM-slug
 - Establishing patterns for the codebase
 - Decisions with long-term consequences
 
-### Rule 5: Searching Project Memory
+### Rule 5: Backlog (Bugs & Features)
+
+Track work items in `docs/project-memory/backlog/`:
+- **Bugs** use `B-NNN` prefix (e.g., `B-001-audio-dropout.md`)
+- **Features** use `F-NNN` prefix (e.g., `F-003-real-calendar-integration.md`)
+- Each item gets its own markdown file with Summary, Status, Priority
+- Update `docs/project-memory/backlog/README.md` table when adding/changing items
+- Link backlog items from code comments when relevant (e.g., `# MOCK: see F-003`)
+
+### Rule 6: Searching Project Memory
 
 ```bash
 git log --all --grep="S-YYYY-MM-DD"              # Commits by session
 grep -r "keyword" docs/project-memory/sessions/   # Sessions by keyword
 grep -r "topic" docs/project-memory/adr/           # ADRs by topic
+grep -r "keyword" docs/project-memory/backlog/     # Backlog by keyword
 ```
 
-### Rule 6: Workflow
+### Rule 7: Workflow
 
 1. Start work → Generate Session ID (UTC timestamp)
 2. Create session doc from template

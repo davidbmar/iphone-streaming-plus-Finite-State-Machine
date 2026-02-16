@@ -1,7 +1,9 @@
-"""Calendar tool — stub with fake data.
+"""Calendar tool — MOCK (returns hardcoded fake events).
 
-Proves multi-tool routing works. Returns hardcoded events
-so the model can demonstrate calendar-aware responses.
+Proves multi-tool routing works. Replace with real calendar
+API integration (Apple Calendar, Google Calendar, etc.).
+
+See backlog: F-003-real-calendar-integration.md
 """
 
 from datetime import datetime
@@ -33,9 +35,10 @@ class CalendarTool(BaseTool):
         }
 
     async def execute(self, **kwargs: Any) -> str:
+        # MOCK: Replace with real calendar API (F-003)
         date = kwargs.get("date", datetime.now().strftime("%Y-%m-%d"))
         return (
-            f"Calendar for {date}:\n"
+            f"[MOCK DATA] Calendar for {date}:\n"
             f"- 9:00 AM: Team standup (Zoom)\n"
             f"- 11:30 AM: Lunch with Alex at Torchy's Tacos\n"
             f"- 2:00 PM: Dentist appointment\n"
