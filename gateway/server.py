@@ -174,6 +174,18 @@ _HEDGING_PHRASES = [
     "cannot actually search",
     "don't actually have access",
     "still under development",
+    "not accessible in real-time",
+    "not accessible in real time",
+    "isn't accessible",
+    "is not accessible",
+    "can't provide real-time",
+    "cannot provide real-time",
+    "can't provide you with real-time",
+    "i can't answer that",
+    "check yahoo finance",
+    "check a financial",
+    "visit a financial",
+    "recommend checking",
 ]
 
 LOOKUP_PHRASE = "Let me look that up."
@@ -447,6 +459,25 @@ async def handle_ws(request: web.Request) -> web.WebSocketResponse:
                                     except Exception as e:
                                         log.warning("Tool search failed: %s", e)
 
+                        # ── Post-tool hedging: model got results but still refused ──
+                        if (search_performed and _reply_is_hedging(reply)):
+                            log.info("LLM hedged AFTER receiving search results, retrying with directive")
+                            await ws.send_json({"type": "agent_thinking"})
+                            # Re-ask with a strong directive to use the results
+                            directive_msgs = messages + tool_msgs + [{
+                                "role": "user",
+                                "content": (
+                                    "You already searched the web and received results above. "
+                                    "Use those results to answer my question directly. "
+                                    "Do not say you cannot access real-time data — you just did."
+                                ),
+                            }]
+                            reply = await llm_generate(
+                                conversation.system, directive_msgs,
+                                llm_provider, llm_model,
+                            )
+                            log.info("Post-tool retry reply: %r", reply[:80])
+
                         # ── Safety net: model didn't use tools but hedged ──
                         if (not search_performed and not tool_calls
                                 and use_tools and _reply_is_hedging(reply)):
@@ -490,7 +521,8 @@ async def handle_ws(request: web.Request) -> web.WebSocketResponse:
                         await session.speak_text(reply, voice_id=tts_voice)
                     except Exception as e:
                         log.error("LLM error: %s", e)
-                        await ws.send_json({"type": "error", "message": f"LLM error: {e}"})
+                        if not ws.closed:
+                            await ws.send_json({"type": "error", "message": f"LLM error: {e}"})
             else:
                 await ws.send_json({"type": "error", "message": "No WebRTC session"})
 

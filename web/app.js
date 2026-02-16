@@ -29,6 +29,90 @@ let pendingDownloadModel = ""; // Model currently being downloaded (for auto-sel
 let currentVoice = ""; // Currently selected TTS voice
 let searchEnabled = true; // Web search toggle
 
+// --- Markdown to safe DOM nodes (for agent chat bubbles) ---
+// Uses DOM API (createElement/textContent) exclusively — no innerHTML.
+function renderMarkdown(container, text) {
+    const paragraphs = text.split(/\n{2,}/);
+    paragraphs.forEach((para) => {
+        const trimmed = para.trim();
+        if (!trimmed) return;
+        const lines = trimmed.split("\n");
+        const isList = lines.every(
+            (l) => /^\s*[-*•]\s+/.test(l) || /^\s*\d+\.\s+/.test(l) || !l.trim()
+        );
+        if (isList) {
+            const ul = document.createElement("ul");
+            ul.style.margin = "4px 0";
+            ul.style.paddingLeft = "18px";
+            lines.forEach((line) => {
+                const content = line.replace(/^\s*[-*•]\s+/, "").replace(/^\s*\d+\.\s+/, "").trim();
+                if (content) {
+                    const li = document.createElement("li");
+                    renderInline(li, content);
+                    ul.appendChild(li);
+                }
+            });
+            container.appendChild(ul);
+        } else {
+            const p = document.createElement("p");
+            p.style.margin = "4px 0";
+            renderInline(p, lines.join(" "));
+            container.appendChild(p);
+        }
+    });
+}
+
+function renderInline(el, text) {
+    // Process inline markdown + raw URLs into safe DOM nodes
+    // Order matters: markdown links before raw URLs, bold before italic
+    const pattern = /(\*\*(.+?)\*\*)|(\*(.+?)\*)|(`(.+?)`)|(\[([^\]]+)\]\(([^)]+)\))|(https?:\/\/[^\s),]+)/g;
+    let lastIndex = 0;
+    for (const match of text.matchAll(pattern)) {
+        if (match.index > lastIndex) {
+            el.appendChild(document.createTextNode(text.slice(lastIndex, match.index)));
+        }
+        if (match[1]) {
+            const strong = document.createElement("strong");
+            strong.textContent = match[2];
+            el.appendChild(strong);
+        } else if (match[3]) {
+            const em = document.createElement("em");
+            em.textContent = match[4];
+            el.appendChild(em);
+        } else if (match[5]) {
+            const code = document.createElement("code");
+            code.textContent = match[6];
+            el.appendChild(code);
+        } else if (match[7]) {
+            // Markdown link: [text](url)
+            const a = document.createElement("a");
+            a.textContent = match[8];
+            a.href = match[9];
+            a.target = "_blank";
+            a.rel = "noopener";
+            el.appendChild(a);
+        } else if (match[10]) {
+            // Raw URL: https://example.com
+            const a = document.createElement("a");
+            // Show shortened domain as link text
+            try {
+                const url = new URL(match[10]);
+                a.textContent = url.hostname.replace("www.", "");
+            } catch {
+                a.textContent = match[10];
+            }
+            a.href = match[10];
+            a.target = "_blank";
+            a.rel = "noopener";
+            el.appendChild(a);
+        }
+        lastIndex = match.index + match[0].length;
+    }
+    if (lastIndex < text.length) {
+        el.appendChild(document.createTextNode(text.slice(lastIndex)));
+    }
+}
+
 // --- Chat bubble helpers ---
 function addChatBubble(text, role) {
     const thinking = conversationLog.querySelector(".thinking");
@@ -36,7 +120,11 @@ function addChatBubble(text, role) {
 
     const bubble = document.createElement("div");
     bubble.className = "msg msg-" + role;
-    bubble.textContent = text;
+    if (role === "agent") {
+        renderMarkdown(bubble, text);
+    } else {
+        bubble.textContent = text;
+    }
     conversationLog.appendChild(bubble);
     conversationLog.scrollTop = conversationLog.scrollHeight;
 }

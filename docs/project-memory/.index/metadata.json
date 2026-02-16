@@ -26,4 +26,11 @@
     "date": "2026-02-16",
     "file": "S-2026-02-16-0420-web-search-integration.md"
   }
+,
+  {
+    "sessionId": "S-2026-02-16-1627-test-suite-orchestrator-plan",
+    "title": "Post-build test suite + orchestrator unification plan",
+    "date": "2026-02-16",
+    "file": "S-2026-02-16-1627-test-suite-orchestrator-plan.md"
+  }
 ]

@@ -134,6 +134,46 @@ class Session:
         log.info("TTS playback stopped, queue cleared")
 
     @staticmethod
+    def _clean_for_speech(text: str) -> str:
+        """Strip markdown formatting so TTS reads clean prose.
+
+        LLMs return **bold**, *italic*, bullet lists, etc. that Piper
+        would speak as literal "asterisk asterisk". This converts
+        markdown to plain speech-friendly text.
+        """
+        # Remove markdown headers: ## Header → Header
+        text = re.sub(r'^#{1,6}\s+', '', text, flags=re.MULTILINE)
+        # Convert bullet points BEFORE bold (so * bullets don't confuse ** bold)
+        text = re.sub(r'^\s*[-*•]\s+', '', text, flags=re.MULTILINE)
+        # Convert numbered lists: "1. item" → "item"
+        text = re.sub(r'^\s*\d+\.\s+', '', text, flags=re.MULTILINE)
+        # Remove bold/italic markers: **text** → text, *text* → text
+        text = re.sub(r'\*{1,3}(.+?)\*{1,3}', r'\1', text)
+        # Catch any remaining stray asterisks
+        text = re.sub(r'\*{1,3}', '', text)
+        # Remove markdown links: [text](url) → text
+        text = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', text)
+        # Track if URLs were present, then strip them along with surrounding phrases
+        has_urls = bool(re.search(r'https?://\S+', text))
+        # Strip "Visit/Check/See URL" phrases and bare URLs
+        text = re.sub(r'(?:visit|check|see|at|on|from)\s+https?://\S+', '', text, flags=re.IGNORECASE)
+        text = re.sub(r'https?://\S+', '', text)
+        # Remove inline code backticks: `code` → code
+        text = re.sub(r'`(.+?)`', r'\1', text)
+        # Collapse multiple newlines into sentence breaks
+        text = re.sub(r'\n{2,}', '. ', text)
+        # Single newlines to spaces
+        text = re.sub(r'\n', ' ', text)
+        # Clean up multiple spaces/periods
+        text = re.sub(r'\s{2,}', ' ', text)
+        text = re.sub(r'\.{2,}', '.', text)
+        text = text.strip()
+        # If URLs were stripped, add a spoken note about the links
+        if has_urls and text:
+            text += " See the links on screen for more details."
+        return text
+
+    @staticmethod
     def _split_sentences(text: str) -> list[str]:
         """Split text into sentences for incremental TTS."""
         # Split on sentence-ending punctuation followed by whitespace
@@ -152,6 +192,7 @@ class Session:
         # Ensure the TTS generator is attached to the audio source
         self._audio_source.set_generator(self._tts_generator)
 
+        text = self._clean_for_speech(text)
         sentences = self._split_sentences(text)
         log.info("TTS: %d sentences to synthesize", len(sentences))
 
