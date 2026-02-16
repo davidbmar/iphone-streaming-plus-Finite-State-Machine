@@ -86,20 +86,32 @@ async def handle_ws(request: web.Request) -> web.WebSocketResponse:
     # web_search is real; check_calendar and search_notes are mocks (F-003, F-004).
     all_tool_schemas = get_all_schemas()
 
+    async def _safe_ws_send(data: dict) -> bool:
+        """Send JSON over WS, returning False if the connection is gone."""
+        try:
+            if not ws.closed:
+                await ws.send_json(data)
+                return True
+        except Exception:
+            log.debug("WS send failed (connection closing)")
+        return False
+
     async def _on_status(status: str) -> None:
-        if not ws.closed:
-            if status == "thinking":
-                await ws.send_json({"type": "agent_thinking"})
-            elif status == "searching":
-                await ws.send_json({"type": "agent_searching"})
+        if status == "thinking":
+            await _safe_ws_send({"type": "agent_thinking"})
+        elif status == "searching":
+            await _safe_ws_send({"type": "agent_searching"})
 
     async def _on_tool_call(name: str, args: dict) -> None:
         if ws.closed:
             return
         if name == "web_search" and session:
-            await ws.send_json({"type": "agent_reply", "text": LOOKUP_PHRASE})
-            await session.speak_text(LOOKUP_PHRASE, voice_id=tts_voice)
-            await ws.send_json({"type": "agent_searching"})
+            await _safe_ws_send({"type": "agent_reply", "text": LOOKUP_PHRASE})
+            try:
+                await session.speak_text(LOOKUP_PHRASE, voice_id=tts_voice)
+            except Exception:
+                log.debug("TTS for lookup phrase failed (session closing)")
+            await _safe_ws_send({"type": "agent_searching"})
 
     orchestrator = Orchestrator(config=OrchestratorConfig(
         provider=llm_provider,
@@ -116,6 +128,25 @@ async def handle_ws(request: web.Request) -> web.WebSocketResponse:
             orchestrator.update_config(tools=all_tool_schemas)
         else:
             orchestrator.update_config(tools=[])
+
+    async def _do_agent_reply(user_text: str) -> None:
+        """Run orchestrator + TTS in background so WS loop stays responsive."""
+        try:
+            reply = await orchestrator.chat(user_text)
+        except Exception as e:
+            log.error("Orchestrator error: %s", e)
+            await _safe_ws_send({"type": "error", "message": f"LLM error: {e}"})
+            return
+
+        if not await _safe_ws_send({"type": "agent_reply", "text": reply}):
+            return  # Client gone, skip TTS
+        log.info("Agent reply: %r (voice=%s)", reply[:80], tts_voice)
+
+        try:
+            if session:
+                await session.speak_text(reply, voice_id=tts_voice)
+        except Exception as e:
+            log.warning("TTS speak failed: %s", e)
 
     async for raw in ws:
         if raw.type != web.WSMsgType.TEXT:
@@ -287,7 +318,7 @@ async def handle_ws(request: web.Request) -> web.WebSocketResponse:
         elif msg_type == "mic_start":
             if session:
                 async def on_transcription(text, partial):
-                    await ws.send_json({"type": "transcription", "text": text, "partial": partial})
+                    await _safe_ws_send({"type": "transcription", "text": text, "partial": partial})
                     log.debug("Partial transcription: %r", text[:80] if text else "")
                 session.start_recording(on_transcription=on_transcription)
                 log.info("Mic recording started (live)")
@@ -301,18 +332,10 @@ async def handle_ws(request: web.Request) -> web.WebSocketResponse:
                 await ws.send_json({"type": "transcription", "text": text, "partial": False})
                 log.info("Final transcription: %r", text[:80] if text else "")
 
-                # Agent mode: orchestrator handles tool-call loop + hedging
+                # Agent mode: run in background so WS loop stays responsive
                 if agent_mode and text.strip():
                     _refresh_orchestrator_tools()
-                    try:
-                        reply = await orchestrator.chat(text)
-                        await ws.send_json({"type": "agent_reply", "text": reply})
-                        log.info("Agent reply: %r (voice=%s)", reply[:80], tts_voice)
-                        await session.speak_text(reply, voice_id=tts_voice)
-                    except Exception as e:
-                        log.error("LLM error: %s", e)
-                        if not ws.closed:
-                            await ws.send_json({"type": "error", "message": f"LLM error: {e}"})
+                    asyncio.create_task(_do_agent_reply(text))
             else:
                 await ws.send_json({"type": "error", "message": "No WebRTC session"})
 
