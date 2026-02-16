@@ -129,6 +129,26 @@ bash scripts/test_lan.sh        # iPhone on same Wi-Fi
 bash scripts/test_cellular.sh   # iPhone on cellular (cloudflared tunnel)
 ```
 
+### Testing
+
+```bash
+# Full post-build suite (~30s, needs TTS models + Ollama)
+python3 tests/test_suite.py
+
+# Unit tests only (~1s, no external services)
+python3 tests/test_suite.py --quick
+
+# Headless TTS+STT pipeline smoke test
+python3 scripts/smoke_test.py
+```
+
+The test suite covers 4 categories: **unit tests** (audio queue, ring buffer,
+conversation history, markdown stripping, hedging detection, search formatting,
+tool result messages, ICE server conversion, orchestrator helpers, HTML cleanup),
+**integration tests** (TTS, STT, round-trip), **service tests** (Ollama, web
+search, quota), and **server tests** (health endpoint, index page, WebSocket
+auth and ping/pong). Tests gracefully skip when dependencies are missing.
+
 ### LAN / Cellular Notes
 
 **LAN:** Uses self-signed HTTPS cert (required for mic access). On first visit in Safari, tap **Show Details** → **visit this website** → **Visit Website**.
@@ -190,6 +210,17 @@ Client                          Server
 │   ├── index.html           # Two-screen mobile UI
 │   ├── app.js               # WS signaling + WebRTC + hold-to-talk
 │   └── styles.css           # Mobile-first dark theme
+│
+├── voice_assistant/          # Standalone CLI voice agent
+│   ├── orchestrator.py      # Tool-calling loop (Ollama, 5 iterations)
+│   ├── config.py            # Settings (pydantic-settings)
+│   ├── tool_router.py       # Tool dispatch
+│   ├── main.py              # CLI REPL entry point
+│   ├── prompts/system.txt   # System prompt template
+│   └── tools/               # Tool plugins (web_search, calendar, notes)
+│
+├── tests/
+│   └── test_suite.py        # Post-build test suite (90 tests, 4 categories)
 │
 ├── scripts/                 # Testing & tooling
 │   ├── run.sh               # Unified launcher (recommended)
