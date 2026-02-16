@@ -16,11 +16,19 @@ from engine.tts import list_voices, DEFAULT_VOICE
 from engine.conversation import ConversationHistory
 from engine.llm import (
     generate as llm_generate,
+    generate_with_tools as llm_generate_with_tools,
+    build_tool_result_messages,
     is_configured as llm_is_configured,
     get_provider_name,
     available_providers,
     get_available_models,
     pull_ollama_model,
+)
+from engine.search import (
+    search as web_search,
+    format_results_for_context,
+    get_quota_status,
+    is_configured as search_is_configured,
 )
 from gateway.turn import fetch_twilio_turn_credentials
 
@@ -54,6 +62,129 @@ async def handle_health(request: web.Request) -> web.Response:
     return web.json_response({"status": "ok", "uptime": uptime})
 
 
+async def handle_quota(request: web.Request) -> web.Response:
+    """Return search provider quota status."""
+    return web.json_response(await get_quota_status())
+
+
+# ── Search tool definition (for native tool calling) ──────────
+
+SEARCH_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "web_search",
+        "description": (
+            "Search the web for current, real-time information. Use this for "
+            "weather, news, stock prices, sports scores, recent events, current "
+            "dates, driving times, or any facts that may have changed recently."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "A clean, concise web search query",
+                }
+            },
+            "required": ["query"],
+        },
+    },
+}
+
+
+# ── Search classifier (fallback for safety net query extraction) ──
+
+SEARCH_CLASSIFIER_PROMPT = (
+    "Extract a clean web search query from this user message. "
+    "Strip conversational filler and keep only the factual question.\n\n"
+    "Reply with ONLY the search query, nothing else.\n\n"
+    "Examples:\n"
+    "User: 'What is the weather today in Austin?' → weather in Austin today\n"
+    "User: 'Yes, look that up, what's the S&P 500?' → S&P 500 current price\n"
+    "User: 'Can you tell me who won the Super Bowl?' → who won the Super Bowl"
+)
+
+
+async def _extract_search_query(text: str, provider: str, model: str) -> str:
+    """Extract a clean search query from user text via LLM.
+
+    Used as fallback when the safety net triggers (model hedged without tool use).
+    """
+    try:
+        reply = await llm_generate(
+            SEARCH_CLASSIFIER_PROMPT,
+            [{"role": "user", "content": text}],
+            provider,
+            model,
+        )
+        query = reply.strip()
+        if len(query) > 5:
+            log.info("Query extraction: %r → %r", text[:50], query[:60])
+            return query
+    except Exception as e:
+        log.warning("Query extraction failed: %s", e)
+    return text  # fallback to raw text
+
+
+# ── Search hedging detection (safety net) ─────────────────────
+
+# Phrases that indicate the LLM is refusing or hedging — trigger search fallback
+_HEDGING_PHRASES = [
+    "don't have access",
+    "don't have real-time",
+    "don't have current",
+    "don't have the ability",
+    "don't have live",
+    "do not have access",
+    "do not have real-time",
+    "do not have current",
+    "do not have the ability",
+    "can't browse",
+    "can't access the internet",
+    "can't access the web",
+    "can't search",
+    "cannot browse",
+    "cannot access the internet",
+    "cannot access the web",
+    "cannot search",
+    "not able to browse",
+    "not able to access",
+    "not able to search",
+    "unable to browse",
+    "unable to access real",
+    "unable to search",
+    "my knowledge cutoff",
+    "my training data",
+    "information is outdated",
+    "data is outdated",
+    "may be outdated",
+    "might be outdated",
+    "as an ai",
+    "as a language model",
+    "as a large language model",
+    "lack access",
+    "beyond my capabilities",
+    "outside my capabilities",
+    "not available to me",
+    "can't actually browse",
+    "can't actually access",
+    "can't actually search",
+    "cannot actually browse",
+    "cannot actually access",
+    "cannot actually search",
+    "don't actually have access",
+    "still under development",
+]
+
+LOOKUP_PHRASE = "Let me look that up."
+
+
+def _reply_is_hedging(reply: str) -> bool:
+    """Check if the LLM response contains hedging/refusal phrases."""
+    lower = reply.lower()
+    return any(phrase in lower for phrase in _HEDGING_PHRASES)
+
+
 # ── WebSocket handler ─────────────────────────────────────────
 
 async def handle_ws(request: web.Request) -> web.WebSocketResponse:
@@ -68,6 +199,7 @@ async def handle_ws(request: web.Request) -> web.WebSocketResponse:
     llm_provider = ""  # Empty = use default from env
     llm_model = ""  # Empty = use OLLAMA_MODEL env var
     tts_voice = DEFAULT_VOICE
+    search_enabled = True  # User toggle, defaults ON
 
     async for raw in ws:
         if raw.type != web.WSMsgType.TEXT:
@@ -107,6 +239,7 @@ async def handle_ws(request: web.Request) -> web.WebSocketResponse:
                 log.info("Default model: ollama/%s", default_model)
             else:
                 default_provider = get_provider_name()
+            search_quota = await get_quota_status()
             await ws.send_json({
                 "type": "hello_ack",
                 "voices": tts_voices,
@@ -118,6 +251,8 @@ async def handle_ws(request: web.Request) -> web.WebSocketResponse:
                 "model_catalog": model_catalog,
                 "llm_default_provider": default_provider,
                 "llm_default_model": default_model,
+                "search_enabled": search_enabled,
+                "search_quota": search_quota,
             })
 
         elif msg_type == "webrtc_offer":
@@ -250,16 +385,105 @@ async def handle_ws(request: web.Request) -> web.WebSocketResponse:
                 await ws.send_json({"type": "transcription", "text": text, "partial": False})
                 log.info("Final transcription: %r", text[:80] if text else "")
 
-                # Agent mode: STT → LLM → TTS
+                # Agent mode: tool-call → [search?] → reply → [hedging? → search → retry]
                 if agent_mode and text.strip():
                     conversation.add_turn("user", text)
-                    await ws.send_json({"type": "agent_thinking"})
                     active_provider = llm_provider or get_provider_name()
-                    log.info("Agent thinking (provider=%s)...", active_provider)
+                    use_tools = search_enabled and search_is_configured()
+                    tools = [SEARCH_TOOL] if use_tools else []
+                    messages = conversation.get_messages()
+
+                    await ws.send_json({"type": "agent_thinking"})
+                    log.info("Agent thinking (provider=%s, tools=%d)...",
+                             active_provider, len(tools))
+
                     try:
-                        reply = await llm_generate(
-                            conversation.system, conversation.get_messages(), llm_provider, llm_model
+                        # ── Primary: generate with tool calling ──
+                        reply, tool_calls = await llm_generate_with_tools(
+                            conversation.system, messages, tools,
+                            llm_provider, llm_model,
                         )
+
+                        # Handle tool calls (model decided to search)
+                        search_performed = False
+                        if tool_calls:
+                            for i, tc in enumerate(tool_calls):
+                                func = tc.get("function", {})
+                                if func.get("name") == "web_search":
+                                    query = func.get("arguments", {}).get("query", text)
+                                    log.info("Tool call: web_search(%r)", query)
+
+                                    await ws.send_json({"type": "agent_reply",
+                                                        "text": LOOKUP_PHRASE})
+                                    await session.speak_text(LOOKUP_PHRASE,
+                                                             voice_id=tts_voice)
+                                    await ws.send_json({"type": "agent_searching"})
+
+                                    try:
+                                        search_result = await web_search(query)
+                                        if search_result:
+                                            context = format_results_for_context(
+                                                search_result)
+                                            log.info(
+                                                "Search via %s: %d results for %r",
+                                                search_result["provider"],
+                                                len(search_result["results"]),
+                                                query[:60],
+                                            )
+                                            # Build tool result messages
+                                            tool_msgs = build_tool_result_messages(
+                                                active_provider, tool_calls,
+                                                {i: context}, reply,
+                                            )
+                                            await ws.send_json(
+                                                {"type": "agent_thinking"})
+                                            reply, _ = await llm_generate_with_tools(
+                                                conversation.system,
+                                                messages + tool_msgs,
+                                                [],  # no tools on followup
+                                                llm_provider, llm_model,
+                                            )
+                                            search_performed = True
+                                    except Exception as e:
+                                        log.warning("Tool search failed: %s", e)
+
+                        # ── Safety net: model didn't use tools but hedged ──
+                        if (not search_performed and not tool_calls
+                                and use_tools and _reply_is_hedging(reply)):
+                            log.info("LLM hedged without tools, safety net search")
+                            search_query = await _extract_search_query(
+                                text, llm_provider, llm_model)
+
+                            await ws.send_json({"type": "agent_reply",
+                                                "text": LOOKUP_PHRASE})
+                            await session.speak_text(LOOKUP_PHRASE,
+                                                     voice_id=tts_voice)
+                            await ws.send_json({"type": "agent_searching"})
+                            try:
+                                search_result = await web_search(search_query)
+                                if search_result:
+                                    context = format_results_for_context(
+                                        search_result)
+                                    log.info("Safety net search via %s: %d results",
+                                             search_result["provider"],
+                                             len(search_result["results"]))
+                                    # Inject as assistant message (fallback path)
+                                    search_msgs = messages + [{
+                                        "role": "assistant",
+                                        "content": (
+                                            "I searched the web and found:\n\n"
+                                            + context
+                                            + "\nI'll use these results to answer."
+                                        ),
+                                    }]
+                                    await ws.send_json({"type": "agent_thinking"})
+                                    reply = await llm_generate(
+                                        conversation.system, search_msgs,
+                                        llm_provider, llm_model,
+                                    )
+                            except Exception as e:
+                                log.warning("Safety net search failed: %s", e)
+
                         conversation.add_turn("assistant", reply)
                         await ws.send_json({"type": "agent_reply", "text": reply})
                         log.info("Agent reply: %r (voice=%s)", reply[:80], tts_voice)
@@ -269,6 +493,11 @@ async def handle_ws(request: web.Request) -> web.WebSocketResponse:
                         await ws.send_json({"type": "error", "message": f"LLM error: {e}"})
             else:
                 await ws.send_json({"type": "error", "message": "No WebRTC session"})
+
+        elif msg_type == "set_search_enabled":
+            search_enabled = msg.get("enabled", True)
+            log.info("Web search %s by user", "enabled" if search_enabled else "disabled")
+            await ws.send_json({"type": "search_enabled_set", "enabled": search_enabled})
 
         elif msg_type == "ping":
             await ws.send_json({"type": "pong"})
@@ -293,6 +522,7 @@ def create_app() -> web.Application:
     app = web.Application()
     app.router.add_get("/", handle_index)
     app.router.add_get("/health", handle_health)
+    app.router.add_get("/api/quota", handle_quota)
     app.router.add_get("/ws", handle_ws)
     app.router.add_static("/static", WEB_DIR, show_index=False)
     return app

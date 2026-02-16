@@ -13,7 +13,7 @@ LLM_PROVIDER = os.getenv("LLM_PROVIDER", "").lower()
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
-OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3.2:3b")
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen2.5:14b")
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
 
 # Curated Ollama models — fast, conversational, good for voice agent
@@ -29,6 +29,9 @@ OLLAMA_CATALOG = [
     {"name": "deepseek-r1:7b", "label": "DeepSeek R1", "params": "7B", "params_num": 7.0},
     {"name": "llama3.1:8b", "label": "Llama 3.1", "params": "8B", "params_num": 8.0},
     {"name": "gemma2:9b", "label": "Gemma 2", "params": "9B", "params_num": 9.0},
+    {"name": "mistral-nemo", "label": "Mistral Nemo", "params": "12B", "params_num": 12.0},
+    {"name": "qwen2.5:14b", "label": "Qwen 2.5", "params": "14B", "params_num": 14.0},
+    {"name": "deepseek-r1:14b", "label": "DeepSeek R1", "params": "14B", "params_num": 14.0},
 ]
 
 # Lazy-loaded clients
@@ -268,6 +271,205 @@ async def generate(system: str, messages: list[dict], provider: str = "", model:
     loop = asyncio.get_event_loop()
     fn = functools.partial(_generate_sync, system, messages, provider, model)
     return await loop.run_in_executor(None, fn)
+
+
+# ── Tool-calling generation ──────────────────────────────────
+
+def _generate_claude_with_tools(system: str, messages: list[dict], tools: list[dict]) -> tuple:
+    """Call Claude with tool-use support. Returns (text, tool_calls)."""
+    client = _get_anthropic()
+    anthropic_tools = [
+        {
+            "name": t["function"]["name"],
+            "description": t["function"]["description"],
+            "input_schema": t["function"]["parameters"],
+        }
+        for t in tools
+    ]
+    resp = client.messages.create(
+        model="claude-haiku-4-5-20251001",
+        max_tokens=300,
+        system=system,
+        messages=messages,
+        tools=anthropic_tools,
+    )
+    text = ""
+    tool_calls = []
+    for block in resp.content:
+        if block.type == "text":
+            text += block.text
+        elif block.type == "tool_use":
+            tool_calls.append({
+                "id": block.id,
+                "function": {"name": block.name, "arguments": block.input},
+            })
+    log.info("Claude response: %d chars, %d tool calls, stop=%s",
+             len(text), len(tool_calls), resp.stop_reason)
+    return text, tool_calls
+
+
+def _generate_openai_with_tools(system: str, messages: list[dict], tools: list[dict]) -> tuple:
+    """Call OpenAI with tool-use support. Returns (text, tool_calls)."""
+    client = _get_openai()
+    openai_messages = [{"role": "system", "content": system}] + messages
+    resp = client.chat.completions.create(
+        model=OPENAI_MODEL,
+        max_tokens=300,
+        messages=openai_messages,
+        tools=tools,
+    )
+    choice = resp.choices[0]
+    text = choice.message.content or ""
+    tool_calls = []
+    if choice.message.tool_calls:
+        for tc in choice.message.tool_calls:
+            args = tc.function.arguments
+            if isinstance(args, str):
+                args = json.loads(args)
+            tool_calls.append({
+                "id": tc.id,
+                "function": {"name": tc.function.name, "arguments": args},
+            })
+    log.info("OpenAI response (%s): %d chars, %d tool calls",
+             OPENAI_MODEL, len(text), len(tool_calls))
+    return text, tool_calls
+
+
+def _generate_ollama_with_tools(system: str, messages: list[dict],
+                                tools: list[dict], model: str = "") -> tuple:
+    """Call Ollama with tool-use support. Returns (text, tool_calls)."""
+    client = _get_httpx()
+    active_model = model or OLLAMA_MODEL
+    ollama_messages = [{"role": "system", "content": system}] + messages
+    body = {"model": active_model, "messages": ollama_messages, "stream": False}
+    if tools:
+        body["tools"] = tools
+    resp = client.post(f"{OLLAMA_URL}/api/chat", json=body)
+    resp.raise_for_status()
+    msg = resp.json()["message"]
+    text = msg.get("content", "")
+    raw_tool_calls = msg.get("tool_calls", [])
+    tool_calls = [
+        {"function": {"name": tc["function"]["name"],
+                       "arguments": tc["function"].get("arguments", {})}}
+        for tc in raw_tool_calls
+    ]
+    log.info("Ollama response (%s): %d chars, %d tool calls",
+             active_model, len(text), len(tool_calls))
+    return text, tool_calls
+
+
+def _generate_with_tools_sync(system: str, messages: list[dict],
+                               tools: list[dict], provider: str = "",
+                               model: str = "") -> tuple:
+    """Synchronous generate with tools — dispatches to provider."""
+    provider = provider or _resolve_provider()
+    log.info("LLM generate_with_tools: provider=%s, model=%s, %d tools",
+             provider, model, len(tools))
+    if provider == "claude":
+        return _generate_claude_with_tools(system, messages, tools)
+    elif provider == "openai":
+        return _generate_openai_with_tools(system, messages, tools)
+    else:
+        return _generate_ollama_with_tools(system, messages, tools, model=model)
+
+
+async def generate_with_tools(system: str, messages: list[dict],
+                               tools: list[dict], provider: str = "",
+                               model: str = "") -> tuple:
+    """Generate with tool-calling support (runs in thread pool).
+
+    Returns:
+        (text, tool_calls) where tool_calls is a list of:
+        [{"id": str (optional), "function": {"name": str, "arguments": dict}}]
+    """
+    loop = asyncio.get_event_loop()
+    fn = functools.partial(
+        _generate_with_tools_sync, system, messages, tools, provider, model
+    )
+    return await loop.run_in_executor(None, fn)
+
+
+def build_tool_result_messages(provider: str, tool_calls: list[dict],
+                                tool_results: dict, original_text: str = "") -> list[dict]:
+    """Build provider-specific messages to send tool results back.
+
+    Args:
+        provider: "claude", "openai", or "ollama".
+        tool_calls: The tool_calls list from generate_with_tools.
+        tool_results: Dict mapping tool call index (int) to result string.
+        original_text: Any text the model generated alongside tool calls.
+
+    Returns:
+        List of messages to append to conversation for the follow-up call.
+    """
+    messages = []
+
+    if provider == "claude":
+        # Claude: assistant content = [text_block?, tool_use_blocks...],
+        #         then user content = [tool_result_blocks...]
+        assistant_content = []
+        if original_text:
+            assistant_content.append({"type": "text", "text": original_text})
+        for tc in tool_calls:
+            assistant_content.append({
+                "type": "tool_use",
+                "id": tc.get("id", ""),
+                "name": tc["function"]["name"],
+                "input": tc["function"]["arguments"],
+            })
+        messages.append({"role": "assistant", "content": assistant_content})
+        user_content = [
+            {
+                "type": "tool_result",
+                "tool_use_id": tool_calls[i].get("id", ""),
+                "content": result,
+            }
+            for i, result in tool_results.items()
+        ]
+        messages.append({"role": "user", "content": user_content})
+
+    elif provider == "openai":
+        # OpenAI: assistant message with tool_calls, then tool messages
+        openai_tool_calls = [
+            {
+                "id": tc.get("id", f"call_{i}"),
+                "type": "function",
+                "function": {
+                    "name": tc["function"]["name"],
+                    "arguments": json.dumps(tc["function"]["arguments"]),
+                },
+            }
+            for i, tc in enumerate(tool_calls)
+        ]
+        messages.append({
+            "role": "assistant",
+            "content": original_text or None,
+            "tool_calls": openai_tool_calls,
+        })
+        for i, result in tool_results.items():
+            messages.append({
+                "role": "tool",
+                "tool_call_id": tool_calls[i].get("id", f"call_{i}"),
+                "content": result,
+            })
+
+    else:  # ollama
+        # Ollama: assistant message with tool_calls, then tool message(s)
+        ollama_tool_calls = [
+            {"function": {"name": tc["function"]["name"],
+                          "arguments": tc["function"]["arguments"]}}
+            for tc in tool_calls
+        ]
+        messages.append({
+            "role": "assistant",
+            "content": original_text or "",
+            "tool_calls": ollama_tool_calls,
+        })
+        for _i, result in tool_results.items():
+            messages.append({"role": "tool", "content": result})
+
+    return messages
 
 
 def available_providers() -> list[dict]:

@@ -14,6 +14,7 @@ const voiceSelect = document.getElementById("voice-select");
 const downloadBar = document.getElementById("download-bar");
 const downloadLabel = document.getElementById("download-label");
 const downloadFill = document.getElementById("download-fill");
+const searchToggle = document.getElementById("search-toggle");
 
 // --- State ---
 let iceServers = window.__CONFIG__ || [];
@@ -26,6 +27,7 @@ let agentSpeaking = false;
 let currentSelectValue = ""; // Track previous select value for download revert
 let pendingDownloadModel = ""; // Model currently being downloaded (for auto-select)
 let currentVoice = ""; // Currently selected TTS voice
+let searchEnabled = true; // Web search toggle
 
 // --- Chat bubble helpers ---
 function addChatBubble(text, role) {
@@ -53,6 +55,25 @@ function setAgentSpeaking(speaking) {
         stopBtn.classList.remove("hidden");
     } else {
         stopBtn.classList.add("hidden");
+    }
+}
+
+// --- Search ping sound (Web Audio API — no file needed) ---
+function playSearchPing() {
+    try {
+        const ctx = new (window.AudioContext || window.webkitAudioContext)();
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.frequency.value = 880; // A5 note
+        osc.type = "sine";
+        gain.gain.value = 0.15;
+        gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.3);
+        osc.start();
+        osc.stop(ctx.currentTime + 0.3);
+    } catch (e) {
+        // Audio context not available — skip silently
     }
 }
 
@@ -254,6 +275,11 @@ function handleMessage(msg) {
                 });
                 currentSelectValue = providerSelect.value;
             }
+            // Sync search toggle state from server
+            if (msg.search_enabled !== undefined) {
+                searchEnabled = msg.search_enabled;
+                searchToggle.classList.toggle("active", searchEnabled);
+            }
             startWebRTC();
             break;
 
@@ -267,7 +293,22 @@ function handleMessage(msg) {
             }
             break;
 
+        case "agent_searching":
+            playSearchPing();
+            {
+                const searchEl = document.createElement("div");
+                searchEl.className = "msg msg-agent searching";
+                searchEl.textContent = "Searching the web\u2026";
+                conversationLog.appendChild(searchEl);
+                conversationLog.scrollTop = conversationLog.scrollHeight;
+            }
+            break;
+
         case "agent_thinking":
+            {
+                const searching = conversationLog.querySelector(".searching");
+                if (searching) searching.remove();
+            }
             showThinking();
             break;
 
@@ -324,6 +365,11 @@ function handleMessage(msg) {
             if (msg.tts_voices) {
                 populateVoiceSelect(msg.tts_voices, currentVoice);
             }
+            break;
+
+        case "search_enabled_set":
+            searchEnabled = msg.enabled;
+            searchToggle.classList.toggle("active", searchEnabled);
             break;
 
         case "error":
@@ -468,6 +514,12 @@ setInterval(() => { sendMsg("ping"); }, 15000);
 // --- Event listeners ---
 connectBtn.addEventListener("click", connect);
 stopBtn.addEventListener("click", stopSpeaking);
+
+searchToggle.addEventListener("click", () => {
+    searchEnabled = !searchEnabled;
+    searchToggle.classList.toggle("active", searchEnabled);
+    sendMsg("set_search_enabled", { enabled: searchEnabled });
+});
 
 providerSelect.addEventListener("change", () => {
     const value = providerSelect.value;

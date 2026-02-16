@@ -162,8 +162,15 @@ fi
 # ── Health check ─────────────────────────────────────────────
 echo "  Running health check..."
 HEALTH_OK=false
+if [ "$MODE" = "2" ]; then
+  HEALTH_URL="https://localhost:$PORT/health"
+  CURL_FLAGS="-sfk"  # -k: skip self-signed cert verification
+else
+  HEALTH_URL="http://localhost:$PORT/health"
+  CURL_FLAGS="-sf"
+fi
 for i in $(seq 1 5); do
-  if curl -sf "http://localhost:$PORT/health" >/dev/null 2>&1; then
+  if curl $CURL_FLAGS "$HEALTH_URL" >/dev/null 2>&1; then
     HEALTH_OK=true
     break
   fi

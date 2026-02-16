@@ -377,6 +377,40 @@ button:disabled { opacity: 0.3; cursor: not-allowed; }
     margin-top: 6px;
 }
 
+/* Search toggle button — Art Deco style */
+.search-toggle {
+    width: auto;
+    padding: 8px 14px;
+    margin-top: 6px;
+    min-height: 36px;
+    font-family: var(--font-body);
+    font-size: 0.75rem;
+    font-weight: 400;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    border: 1px solid var(--gold-border);
+    background: var(--bg-deep);
+    color: var(--text-muted);
+    cursor: pointer;
+    clip-path: polygon(
+        6px 0%, calc(100% - 6px) 0%,
+        100% 6px, 100% calc(100% - 6px),
+        calc(100% - 6px) 100%, 6px 100%,
+        0% calc(100% - 6px), 0% 6px
+    );
+    transition: all 0.3s ease;
+}
+
+.search-toggle.active {
+    color: var(--gold);
+    border-color: var(--gold-border-strong);
+    background: rgba(201, 168, 76, 0.08);
+}
+
+.search-toggle:active {
+    opacity: 0.7;
+}
+
 /* Optgroup labels */
 #provider-select optgroup,
 #voice-select optgroup {
@@ -502,6 +536,18 @@ button:disabled { opacity: 0.3; cursor: not-allowed; }
 @keyframes oracle-pulse {
     0%, 100% { opacity: 1; border-left-color: var(--gold-border-strong); }
     50% { opacity: 0.4; border-left-color: var(--gold-border); }
+}
+
+.msg.searching {
+    color: var(--gold);
+    font-style: italic;
+    border-left-color: var(--gold);
+    animation: search-pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes search-pulse {
+    0%, 100% { opacity: 1; border-left-color: var(--gold); }
+    50% { opacity: 0.5; border-left-color: var(--gold-dark); }
 }
 
 /* ── Bottom bar ═════════════════════════════════ */
