@@ -1,301 +1,280 @@
-# Voice Agent — WebRTC + TURN Speaker Streaming
+# Voice Agent + Finite State Machine Workflow Engine
 
-Voice agent running on a Mac host: speak into iPhone mic → Whisper STT → LLM (Claude/OpenAI/Ollama) → Piper TTS → hear response through iPhone speaker via WebRTC.
+Mac-hosted Python voice assistant that streams TTS audio to iPhone Safari via WebRTC, with a **hybrid FSM workflow engine** that decomposes complex queries into multi-step research pipelines.
 
-| Voice Agent (Ollama) | Connect | Recording |
+Speak into your iPhone mic &rarr; Whisper STT &rarr; keyword router decides: **simple query** goes direct to LLM, **complex query** triggers a finite state machine &rarr; LLM reasons at each state &rarr; Piper TTS &rarr; hear response through iPhone speaker via WebRTC.
+
+| Voice Agent | Connect | Workflow Debugger |
 |:---:|:---:|:---:|
 | ![Agent](docs/screenshots/agent-ollama.png) | ![Connect](docs/screenshots/connect-screen.png) | ![Recording](docs/screenshots/recording-screen.png) |
 
-Works with **Ollama** (free, local), **Claude** (Anthropic API), or **OpenAI** — switchable at runtime from the dropdown.
+Works with **Ollama** (free, local), **Claude** (Anthropic API), or **OpenAI** &mdash; switchable at runtime from the mobile UI dropdown.
+
+---
+
+## The Finite State Machines
+
+The workflow engine (`engine/workflow.py`) defines three FSM templates. A sub-millisecond regex keyword router inspects each user query and dispatches to the matching workflow &mdash; or falls through to a direct LLM call for simple queries.
+
+Each state gets a **focused one-shot LLM prompt** (not the full conversation history), keeping reasoning isolated and token-efficient.
+
+### 1. Research & Compare
+
+Triggered by: *"compare"*, *"top 5"*, *"versus"*, *"market cap"*, *"which is better"*, *"pros and cons"*
+
+```mermaid
+stateDiagram-v2
+    [*] --> initial_lookup: User asks comparison query
+    initial_lookup --> decompose: Search results (ranking)
+    decompose --> search_each: JSON array of per-entity queries
+    search_each --> synthesize: All entity results collected
+    synthesize --> [*]: Ranked answer spoken aloud
+
+    state initial_lookup {
+        direction LR
+        note right of initial_lookup
+            LLM generates search query
+            with current year for freshness.
+            Tool: web_search
+        end note
+    }
+
+    state search_each {
+        direction LR
+        note right of search_each
+            LOOP: one web_search per entity
+            (rate-limited 1.5s between calls)
+        end note
+    }
+```
+
+**Example flow:** *"What are the top 5 S&P 500 companies by market cap?"*
+1. **INITIAL_LOOKUP** &mdash; LLM crafts a search query &rarr; `web_search("top 5 S&P 500 companies market cap 2026")`
+2. **DECOMPOSE** &mdash; LLM reads search results, emits JSON: `["Apple AAPL market cap 2026", "NVIDIA NVDA...", ...]`
+3. **SEARCH_EACH** &mdash; Loop dispatches `web_search()` for each entity (with 1.5s rate-limit delay)
+4. **SYNTHESIZE** &mdash; LLM reads all per-entity results, produces ranked conversational answer
+
+### 2. Deep Research
+
+Triggered by: *"tell me about"*, *"research"*, *"deep dive"*, *"comprehensive"*, *"what's happening with"*
+
+```mermaid
+stateDiagram-v2
+    [*] --> initial_search: User asks research query
+    initial_search --> evaluate_gaps: First search results
+    evaluate_gaps --> targeted_search: 1-2 follow-up queries
+    targeted_search --> synthesize: Gap-filling results
+    synthesize --> [*]: Comprehensive answer
+
+    state evaluate_gaps {
+        direction LR
+        note right of evaluate_gaps
+            LLM identifies missing info
+            and generates follow-up queries
+        end note
+    }
+
+    state targeted_search {
+        direction LR
+        note right of targeted_search
+            LOOP: web_search per gap query
+        end note
+    }
+```
+
+**Strategy:** Search once broadly, evaluate what's missing, search again to fill gaps, then synthesize.
+
+### 3. Fact Check
+
+Triggered by: *"is it true"*, *"fact check"*, *"verify"*, *"debunk"*
+
+```mermaid
+stateDiagram-v2
+    [*] --> extract_claim: User asks fact-check question
+    extract_claim --> search_evidence: Support query
+    search_evidence --> search_counter: Counter query
+    search_counter --> verdict: Both sides gathered
+    verdict --> [*]: Verdict: true / false / partly true
+
+    state extract_claim {
+        direction LR
+        note right of extract_claim
+            LLM extracts the claim and
+            generates both pro and con
+            search queries
+        end note
+    }
+```
+
+**Strategy:** Extract the claim, search for evidence *supporting* it, search for evidence *against* it, then render a fair verdict citing specific sources.
+
+---
 
 ## Architecture
 
 ```
-┌──────────────────────────────────────────────────────┐
-│  Mac Host                                            │
-│                                                      │
-│  ┌────────────┐    ┌───────────────────────────────┐ │
-│  │   Engine    │    │          Gateway              │ │
-│  │            │    │                               │ │
-│  │ Piper TTS  │───▶│  aiohttp server (:8080)       │ │
-│  │ 22kHz→48kHz│    │  ├─ GET /  → index.html       │ │
-│  │            │    │  ├─ GET /health → JSON         │ │
-│  │            │    │  ├─ GET /ws → WebSocket        │ │
-│  │ Whisper STT│◀───│  │    signaling + agent loop   │ │
-│  │ 48kHz→16kHz│    │  └─ RTCPeerConnection          │ │
-│  │            │    │     ├─ AudioTrack out (TTS)     │ │
-│  │ LLM        │◀──▶│     └─ AudioTrack in  (mic)     │ │
-│  │ Claude /   │    │                                 │ │
-│  │ OpenAI /   │    │                                 │ │
-│  │ Ollama     │    │                                 │ │
-│  └────────────┘    └───────────────────────────────┘ │
-└──────────────────────┬───────────────────────────────┘
-                       │  WebRTC (UDP)
-                       │  via TURN relay or direct
-                       │
-┌──────────────────────▼───────────────────────────────┐
-│  iPhone Safari / Chrome                              │
-│                                                      │
-│  ┌───────────────────────────────────────────────┐   │
-│  │  web/app.js                                   │   │
-│  │  ├─ WebSocket signaling                       │   │
-│  │  ├─ RTCPeerConnection (sendrecv)              │   │
-│  │  ├─ getUserMedia (mic) → send audio track     │   │
-│  │  ├─ Hold-to-talk UI                           │   │
-│  │  └─ Chat bubble conversation display          │   │
-│  └───────────────────────────────────────────────┘   │
-└──────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────┐
+│  Mac Host                                                   │
+│                                                             │
+│  ┌─────────────────────┐   ┌──────────────────────────────┐ │
+│  │     Engine           │   │         Gateway              │ │
+│  │                      │   │                              │ │
+│  │  WorkflowRunner      │   │  aiohttp server (:8080)      │ │
+│  │  ├─ keyword router   │   │  ├─ GET / → index.html       │ │
+│  │  ├─ FSM executor     │──▶│  ├─ GET /ws → WebSocket      │ │
+│  │  └─ Orchestrator     │   │  │   signaling + agent loop   │ │
+│  │     (fallthrough)    │   │  └─ RTCPeerConnection         │ │
+│  │                      │   │     ├─ AudioTrack out (TTS)   │ │
+│  │  Piper TTS (ONNX)   │──▶│     └─ AudioTrack in  (mic)   │ │
+│  │  Whisper STT         │◀──│                               │ │
+│  │  LLM (multi-provider)│   │                               │ │
+│  └─────────────────────┘   └──────────────────────────────┘ │
+└─────────────────────────┬───────────────────────────────────┘
+                          │  WebRTC (UDP) via TURN relay
+┌─────────────────────────▼───────────────────────────────────┐
+│  iPhone Safari                                              │
+│  ├─ Hold-to-talk walkie-talkie UI                           │
+│  ├─ Workflow activity card (step progress, timer, debug)    │
+│  ├─ Workflow debugger panel (FSM graph + code view)         │
+│  └─ Model/voice switcher, web search toggle                 │
+└─────────────────────────────────────────────────────────────┘
 ```
 
-### Voice Agent Loop
+### How the router decides
 
 ```
-User holds button → mic audio streams via WebRTC
-         │
-         ▼
-   Whisper STT (~1-2s) → transcribed text
-         │
-         ▼
-   LLM generate (~0.3-1.5s) → reply text
-         │
-         ▼
-   Piper TTS per sentence → audio queue → WebRTC → speaker
+User speaks → STT transcribes → keyword regex scan (<1ms)
+                                      │
+                        ┌─────────────┴─────────────┐
+                        │                           │
+                   Match found                 No match
+                        │                           │
+                  FSM workflow              Orchestrator.chat()
+              (multi-step pipeline)        (single LLM call)
+                        │                           │
+                   Final answer ◄───────────────────┘
+                        │
+                  TTS → WebRTC → iPhone speaker
 ```
 
-### NAT Traversal with TURN
+### Workflow UI on iPhone
 
-```
-iPhone (cellular)                    Twilio TURN                    Mac (behind NAT)
-       │                                │                                │
-       │── STUN discover public IP ────▶│                                │
-       │◀── relay candidate ────────────│                                │
-       │                                │◀── STUN discover public IP ────│
-       │                                │── relay candidate ────────────▶│
-       │                                │                                │
-       │◀═══════ WebRTC audio (UDP) ═══▶│◀═══════ WebRTC audio (UDP) ══▶│
-       │         via TURN relay         │         via TURN relay         │
-```
+When a workflow triggers, the mobile client shows:
+
+- **Activity card** in the chat stream &mdash; segmented progress bar, step label, live timer, LLM diagnostics (model, tokens/sec, prompt size)
+- **Debug panel** (slide-up overlay) &mdash; FSM node graph with active/visited highlighting, loop children with branch arms, plus a code view showing the prompt template for each state
+- **Narration bubbles** &mdash; agent explains what it's doing at each step ("Searching for current ranking...", "Decomposing into individual lookups...")
+
+---
 
 ## Quick Start
 
 ```bash
-# Install Python dependencies
 pip install -r requirements.txt
-
-# Create .env from template
 cp .env.example .env
 
-# Add your LLM API key (at least one)
-echo 'ANTHROPIC_API_KEY=sk-ant-...' >> .env   # Claude Haiku
+# Add at least one LLM provider:
+echo 'ANTHROPIC_API_KEY=sk-ant-...' >> .env   # Claude
 # OR
-echo 'OPENAI_API_KEY=sk-...' >> .env          # GPT-4o-mini
+echo 'OPENAI_API_KEY=sk-...' >> .env          # OpenAI
 # OR just use Ollama (free, local):
 brew install ollama && ollama pull llama3.2:3b
 
-# Run the server
-python3 -m gateway.server
-
-# Open in browser
-open http://localhost:8080
+# Launch
+bash scripts/run.sh     # Interactive launcher (recommended)
+# OR
+python3 -m gateway.server   # Direct server start
 ```
 
-## Usage
-
-### Recommended: Unified Launcher
+## Testing
 
 ```bash
-bash scripts/run.sh
-```
-
-Interactive launcher that handles Python detection, mode selection, and health checks:
-
-```
-How do you want to connect?
-  1) Local      — http://localhost:8080 (Mac browser)
-  2) LAN/WiFi   — https://<ip>:8080 (iPhone on same WiFi)
-  3) Cellular   — Cloudflare Tunnel (iPhone on cell network)
-```
-
-- **Robust Python detection** — tries multiple Python paths and verifies dependencies can be imported
-- **Health check** — confirms the server is actually responding (not just the port is open)
-- **QR code** — displayed in terminal for LAN and cellular modes (install `brew install qrencode` or `pip install qrcode`)
-- **Cleanup** — kills server and tunnel processes on Ctrl+C
-
-### Individual Scripts (still work)
-
-```bash
-bash scripts/test_local.sh      # Local browser test
-bash scripts/test_lan.sh        # iPhone on same Wi-Fi
-bash scripts/test_cellular.sh   # iPhone on cellular (cloudflared tunnel)
-```
-
-### Testing
-
-```bash
-# Full post-build suite (~30s, needs TTS models + Ollama)
-python3 tests/test_suite.py
-
-# Unit tests only (~1s, no external services)
-python3 tests/test_suite.py --quick
-
-# Headless TTS+STT pipeline smoke test
-python3 scripts/smoke_test.py
-```
-
-The test suite covers 4 categories: **unit tests** (audio queue, ring buffer,
-conversation history, markdown stripping, hedging detection, search formatting,
-tool result messages, ICE server conversion, orchestrator helpers, HTML cleanup),
-**integration tests** (TTS, STT, round-trip), **service tests** (Ollama, web
-search, quota), and **server tests** (health endpoint, index page, WebSocket
-auth and ping/pong). Tests gracefully skip when dependencies are missing.
-
-### LAN / Cellular Notes
-
-**LAN:** Uses self-signed HTTPS cert (required for mic access). On first visit in Safari, tap **Show Details** → **visit this website** → **Visit Website**.
-
-**Cellular:** Requires `brew install cloudflared`. TURN relay (Twilio) recommended for reliable NAT traversal.
-
-## Signaling Protocol (WebSocket JSON)
-
-```
-Client                          Server
-  │                               │
-  │─── hello {token} ───────────▶│   Auth check
-  │◀── hello_ack {voices,        │   Voice list + TURN creds
-  │     ice_servers,              │   + LLM provider list
-  │     llm_providers} ──────────│
-  │                               │
-  │─── webrtc_offer {sdp} ──────▶│   Set remote, create answer
-  │◀── webrtc_answer {sdp} ──────│   ICE candidates bundled in SDP
-  │                               │
-  │─── set_provider {provider} ─▶│   Switch LLM (claude/openai/ollama)
-  │◀── provider_set {provider} ──│
-  │                               │
-  │─── mic_start ───────────────▶│   Start buffering mic audio
-  │◀── transcription {text,      │   Partial transcriptions (every 5s)
-  │     partial:true} ────────────│
-  │─── mic_stop ────────────────▶│   Final STT → LLM → TTS
-  │◀── transcription {text} ─────│   Final transcribed text
-  │◀── agent_thinking ───────────│   LLM is generating
-  │◀── agent_reply {text} ───────│   LLM response text
-  │    (TTS audio plays via WebRTC)
-  │                               │
-  │─── stop_speaking ───────────▶│   Interrupt TTS playback
-  │─── ping ─────────────────────▶│   Keepalive
-  │◀── pong ──────────────────────│
+python3 tests/test_suite.py          # Full suite (~30s)
+python3 tests/test_suite.py --quick  # Unit tests only (~1s)
+python3 scripts/smoke_test.py        # Headless TTS pipeline
 ```
 
 ## Project Structure
 
 ```
-├── engine/                  # Audio + AI layer
-│   ├── types.py             # VoiceInfo, AudioChunk dataclasses
-│   ├── adapter.py           # list_voices(), SineWaveGenerator
-│   ├── tts.py               # Piper TTS (text → 48kHz PCM)
-│   ├── stt.py               # Whisper STT (48kHz PCM → text)
-│   ├── llm.py               # LLM wrapper (Claude / OpenAI / Ollama)
-│   ├── orchestrator.py      # Unified chat loop (tool calling, hedging, callbacks)
-│   └── conversation.py      # Conversation history (10-turn window)
-│
-├── gateway/                 # Server + WebRTC layer
-│   ├── server.py            # aiohttp HTTP/HTTPS + WS signaling + /health
-│   ├── webrtc.py            # Session, RTCPeerConnection, mic, TTS queue
-│   ├── turn.py              # Twilio TURN credential fetching
-│   ├── cert.py              # Self-signed HTTPS cert for LAN testing
-│   └── audio/
-│       ├── audio_queue.py           # Thread-safe FIFO for TTS sentences
-│       ├── pcm_ring_buffer.py       # Thread-safe ring buffer (legacy)
-│       └── webrtc_audio_source.py   # Custom MediaStreamTrack
-│
-├── web/                     # Browser client
-│   ├── index.html           # Two-screen mobile UI
-│   ├── app.js               # WS signaling + WebRTC + hold-to-talk
-│   └── styles.css           # Mobile-first dark theme
-│
-├── voice_assistant/          # Standalone CLI voice agent
-│   ├── orchestrator.py      # Backwards-compat shim → engine/orchestrator.py
-│   ├── config.py            # Settings (pydantic-settings)
-│   ├── tool_router.py       # Tool dispatch
-│   ├── main.py              # CLI REPL entry point
-│   ├── prompts/system.txt   # System prompt template
-│   └── tools/               # Tool plugins (web_search, calendar, notes)
-│
-├── tests/
-│   └── test_suite.py        # Post-build test suite (90 tests, 4 categories)
-│
-├── scripts/                 # Testing & tooling
-│   ├── run.sh               # Unified launcher (recommended)
-│   ├── smoke_test.py        # Headless TTS + STT pipeline test
-│   ├── test_local.sh        # Local browser test
-│   ├── test_lan.sh          # iPhone on same Wi-Fi
-│   ├── test_cellular.sh     # iPhone on cellular (cloudflared tunnel)
-│   ├── build-index.sh       # Project memory index builder
-│   └── setup-hooks.sh       # Git pre-commit hook installer
-│
-├── docs/
-│   ├── screenshots/         # UI screenshots
-│   └── project-memory/      # Session docs, ADRs, architecture
-│
-├── CLAUDE.md                # AI project guide + memory system rules
-├── requirements.txt         # Python dependencies
-├── .env.example             # Environment variable template
-└── README.md                # This file
+engine/
+├── workflow.py          # FSM workflow engine (3 templates, keyword router)
+├── orchestrator.py      # Unified chat loop (tool calling, hedging, callbacks)
+├── llm.py               # Multi-provider LLM wrapper (Claude/OpenAI/Ollama)
+├── tts.py               # Piper TTS (text → 48kHz PCM via ONNX)
+├── stt.py               # Whisper STT (48kHz → 16kHz → text)
+└── conversation.py      # Conversation history (10-turn window)
+
+gateway/
+├── server.py            # aiohttp HTTP/WS + workflow WebSocket protocol
+├── webrtc.py            # RTCPeerConnection lifecycle, mic, TTS queue
+├── turn.py              # Twilio TURN ephemeral credentials
+└── audio/               # PCMRingBuffer, AudioQueue, WebRTCAudioSource
+
+web/
+├── index.html           # Two-screen mobile UI (connect → agent)
+├── app.js               # WS signaling, WebRTC, workflow card, chat bubbles
+├── styles.css           # Mobile-first dark theme with Art Deco styling
+├── workflow-map.js      # FSM graph renderer (nodes, arrows, loop children)
+└── workflow-code.js     # Code view renderer (prompt templates per state)
+
+voice_assistant/         # Standalone CLI agent (shares engine/)
+├── main.py              # CLI REPL entry point
+├── config.py            # pydantic-settings
+├── tools/               # Tool plugins (web_search, datetime, calendar, notes)
+└── prompts/system.txt   # System prompt template
+
+tests/
+├── test_suite.py        # 90+ tests across 4 categories
+├── test_mobile_ui.py    # Mobile UI integration tests
+└── test_ui_workflow_v2.py  # Workflow debugger UI tests
+
+scripts/
+├── run.sh               # Unified launcher (local/LAN/cellular)
+├── setup_tunnel.sh      # Cloudflare tunnel setup
+├── test_cellular.sh     # iPhone cellular test script
+└── smoke_test.py        # Headless pipeline test
 ```
 
-## Milestones
+## Key Technical Decisions
 
-| # | Goal | Status | Acceptance |
-|---|------|--------|------------|
-| 1 | Gateway + Signaling | Done | Open localhost:8080, enter token, see voices list |
-| 2 | WebRTC Negotiation | Done | Offer/answer exchange, ICE completes |
-| 3 | Sine Wave Streaming | Done | Click Start → hear tone |
-| 3b | TURN Relay Support | Done | Twilio TURN, works over cellular |
-| 4a | TTS → WebRTC Pipeline | Done | Type text → hear Piper TTS voice |
-| 5 | iPhone Mic → STT | Done | Record → see transcribed text (Whisper STT) |
-| 6 | Voice Agent Loop | Done | Speak → STT → LLM → TTS → hear reply |
+| Decision | Choice | Why |
+|----------|--------|-----|
+| Workflow routing | Precompiled regex keywords | Sub-millisecond, no LLM call needed for routing |
+| Step prompts | One-shot (no conversation history) | Token-efficient, isolated reasoning per state |
+| Loop rate-limiting | 1.5s between searches | Avoids 429 Too Many Requests from search APIs |
+| Search result truncation | Snippets capped at 150 chars, total at 2.5K | Keeps decompose prompts small for faster LLM response |
+| Thinking mode | Disabled for workflow steps | Focused prompts don't benefit from extended reasoning |
+| TTS engine | Piper TTS (ONNX) | Fast offline neural TTS, no API keys |
+| STT engine | faster-whisper (base, int8) | 4x faster than openai/whisper, CPU-only, ~75MB |
+| Audio transport | WebRTC with Opus | 48kHz, NAT traversal via TURN, works over cellular |
+| Mobile UX | Hold-to-talk walkie-talkie | Zero-delay touch events, works in Safari |
 
 ## Environment Variables
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `PORT` | `8080` | Server listen port |
-| `AUTH_TOKEN` | `devtoken` | Token required in `hello` message |
-| `LLM_PROVIDER` | (auto) | `claude`, `openai`, or `ollama` (auto-detects from API keys) |
-| `ANTHROPIC_API_KEY` | — | Anthropic API key (enables Claude Haiku) |
-| `OPENAI_API_KEY` | — | OpenAI API key (enables GPT-4o-mini) |
-| `OPENAI_MODEL` | `gpt-4o-mini` | OpenAI model to use |
-| `OLLAMA_MODEL` | `llama3.2:3b` | Ollama model to use |
-| `OLLAMA_URL` | `http://localhost:11434` | Ollama server URL |
-| `SYSTEM_PROMPT` | (built-in) | Custom system prompt for the voice agent |
-| `TWILIO_ACCOUNT_SID` | — | Twilio Account SID (for TURN credentials) |
-| `TWILIO_AUTH_TOKEN` | — | Twilio Auth Token (for TURN credentials) |
-| `ICE_SERVERS_JSON` | `[]` | Manual ICE server fallback |
-| `HTTPS` | — | Set to `1` for self-signed HTTPS (LAN mic access) |
-| `LOCAL_IP` | `192.168.1.1` | LAN IP for self-signed cert SAN |
+| `AUTH_TOKEN` | `devtoken` | WebSocket auth token |
+| `LLM_PROVIDER` | (auto) | `claude`, `openai`, or `ollama` |
+| `ANTHROPIC_API_KEY` | &mdash; | Enables Claude |
+| `OPENAI_API_KEY` | &mdash; | Enables OpenAI |
+| `OLLAMA_MODEL` | `llama3.2:3b` | Default Ollama model |
+| `TWILIO_ACCOUNT_SID` | &mdash; | For TURN credentials |
+| `TWILIO_AUTH_TOKEN` | &mdash; | For TURN credentials |
 
-## Key Technical Decisions
+## Where We Are (Current State)
 
-| Decision | Choice | Why |
-|----------|--------|-----|
-| TTS engine | Piper TTS (ONNX) | Fast offline neural TTS, no API keys needed |
-| TTS buffering | Sentence-level FIFO queue | Split reply into sentences, TTS each, queue for playback. First sentence plays while later ones synthesize. No audio lost (unlike ring buffer). |
-| STT engine | faster-whisper (base, int8) | 4x faster than openai/whisper, CPU mode, ~75MB |
-| LLM provider | Claude / OpenAI / Ollama | Switchable at runtime from mobile UI. Auto-detects from API keys. |
-| Agent loop | Simple: full STT → full LLM → full TTS | ~2-4s latency. Foundation for future streaming pipeline. |
-| Audio sample rate | 48 kHz | Opus codec native rate |
-| Frame size | 960 samples (20 ms) | Matches aiortc `AUDIO_PTIME` |
-| Resampling | scipy.signal.resample | Piper outputs 22050Hz, WebRTC needs 48000Hz |
-| ICE strategy | Client waits for gathering complete | aiortc has no trickle ICE |
-| TURN credentials | Twilio NTS, fetched per-connection | Ephemeral creds, no static secrets in client |
-| Mobile UI | Two-screen, hold-to-talk | Connect screen → agent screen. Walkie-talkie UX. |
-| Remote access | Cloudflare Tunnel | Free, no domain needed, handles HTTPS + WSS |
+**What's working:**
+- Full voice loop: iPhone mic &rarr; STT &rarr; LLM &rarr; TTS &rarr; WebRTC &rarr; iPhone speaker
+- Three FSM workflow templates with live UI debugging (graph + code view + activity card)
+- Multi-provider LLM support (Ollama/Claude/OpenAI) switchable from mobile UI
+- Web search tool integration with DuckDuckGo
+- Cloudflare tunnel for cellular access
+- 90+ automated tests
 
-## iOS Safari Notes
+**What's next:** See `docs/project-memory/backlog/` for tracked features and bugs.
 
-- Audio autoplay is blocked until a user gesture — Connect button click triggers `audio.play()`
-- `getUserMedia` requires HTTPS (or localhost) — LAN test uses self-signed cert
-- Hold-to-talk uses `touchstart`/`touchend` events (not `click`) for zero-delay response
-- Uses `<audio>` element (not AudioContext) for maximum mobile compatibility
-- CSS uses `100dvh` for proper height with Safari's dynamic toolbar
-- `env(safe-area-inset-bottom)` respects iPhone home indicator area
-- `playsinline` attribute is required for inline audio on iOS
+---
+
+*Built with Python (aiohttp, aiortc, Piper TTS, faster-whisper) and vanilla JS.*
