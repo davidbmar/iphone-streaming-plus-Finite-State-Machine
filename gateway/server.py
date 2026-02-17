@@ -24,7 +24,8 @@ from engine.search import (
     get_quota_status,
     is_configured as search_is_configured,
 )
-from engine.orchestrator import Orchestrator, OrchestratorConfig
+from engine.orchestrator import OrchestratorConfig
+from engine.workflow import WorkflowRunner, get_workflow_def_for_client
 from voice_assistant.tools import get_all_schemas
 from voice_assistant.tool_router import dispatch_tool_call
 from gateway.turn import fetch_twilio_turn_credentials
@@ -113,7 +114,7 @@ async def handle_ws(request: web.Request) -> web.WebSocketResponse:
                 log.debug("TTS for lookup phrase failed (session closing)")
             await _safe_ws_send({"type": "agent_searching"})
 
-    orchestrator = Orchestrator(config=OrchestratorConfig(
+    runner = WorkflowRunner(config=OrchestratorConfig(
         provider=llm_provider,
         model=llm_model,
         tools=all_tool_schemas if search_is_configured() else [],
@@ -122,19 +123,74 @@ async def handle_ws(request: web.Request) -> web.WebSocketResponse:
         on_tool_call=_on_tool_call,
     ))
 
-    def _refresh_orchestrator_tools():
-        """Update orchestrator tools based on current search toggle."""
-        if search_enabled and search_is_configured():
-            orchestrator.update_config(tools=all_tool_schemas)
+    # ── Workflow callbacks (rich WS messages for visual debugger) ──
+    async def _on_workflow_start(workflow_id, wf):
+        client_def = get_workflow_def_for_client(workflow_id)
+        if client_def:
+            await _safe_ws_send({
+                "type": "workflow_start",
+                **client_def,
+            })
+
+    async def _on_workflow_state(state_id, status, **kwargs):
+        if status == "loop_update":
+            await _safe_ws_send({
+                "type": "workflow_loop_update",
+                "state_id": state_id,
+                "children": kwargs.get("children", []),
+                "active_index": kwargs.get("active_index", -1),
+            })
         else:
-            orchestrator.update_config(tools=[])
+            msg = {
+                "type": "workflow_state",
+                "state_id": state_id,
+                "status": status,
+            }
+            if "detail" in kwargs:
+                msg["detail"] = kwargs["detail"]
+            if "step" in kwargs:
+                msg["step"] = kwargs["step"]
+            if "total" in kwargs:
+                msg["total"] = kwargs["total"]
+            if "step_name" in kwargs:
+                msg["step_name"] = kwargs["step_name"]
+            await _safe_ws_send(msg)
+
+    async def _on_workflow_exit(workflow_id):
+        await _safe_ws_send({
+            "type": "workflow_exit",
+            "workflow_id": workflow_id,
+        })
+
+    async def _on_narration(text):
+        await _safe_ws_send({"type": "workflow_narration", "text": text})
+
+    async def _on_activity(activity, timeout_secs):
+        await _safe_ws_send({"type": "workflow_activity", "activity": activity, "timeout_secs": timeout_secs})
+
+    async def _on_debug(diag):
+        await _safe_ws_send({"type": "workflow_debug", **diag})
+
+    runner.on_workflow_start = _on_workflow_start
+    runner.on_workflow_state = _on_workflow_state
+    runner.on_workflow_exit = _on_workflow_exit
+    runner.on_narration = _on_narration
+    runner.on_activity = _on_activity
+    runner.on_debug = _on_debug
+
+    def _refresh_orchestrator_tools():
+        """Update runner tools based on current search toggle."""
+        if search_enabled and search_is_configured():
+            runner.update_config(tools=all_tool_schemas)
+        else:
+            runner.update_config(tools=[])
 
     async def _do_agent_reply(user_text: str) -> None:
-        """Run orchestrator + TTS in background so WS loop stays responsive."""
+        """Run workflow runner + TTS in background so WS loop stays responsive."""
         try:
-            reply = await orchestrator.chat(user_text)
+            reply = await runner.chat(user_text)
         except Exception as e:
-            log.error("Orchestrator error: %s", e)
+            log.error("WorkflowRunner error: %s", e)
             await _safe_ws_send({"type": "error", "message": f"LLM error: {e}"})
             return
 
@@ -179,10 +235,18 @@ async def handle_ws(request: web.Request) -> web.WebSocketResponse:
             default_model = ""
             if model_catalog["ollama_installed"]:
                 default_provider = "ollama"
-                default_model = model_catalog["ollama_installed"][0]["name"]
+                # Respect OLLAMA_MODEL env var, else prefer qwen3:8b, else first installed
+                installed_names = [m["name"] for m in model_catalog["ollama_installed"]]
+                env_model = os.getenv("OLLAMA_MODEL", "")
+                if env_model and env_model in installed_names:
+                    default_model = env_model
+                elif "qwen3:8b" in installed_names:
+                    default_model = "qwen3:8b"
+                else:
+                    default_model = installed_names[0]
                 llm_provider = "ollama"
                 llm_model = default_model
-                orchestrator.update_config(provider=llm_provider, model=llm_model)
+                runner.update_config(provider=llm_provider, model=llm_model)
                 log.info("Default model: ollama/%s", default_model)
             else:
                 default_provider = get_provider_name()
@@ -239,7 +303,7 @@ async def handle_ws(request: web.Request) -> web.WebSocketResponse:
             provider = msg.get("provider", "")
             if provider in ("claude", "openai", "ollama"):
                 llm_provider = provider
-                orchestrator.update_config(provider=provider)
+                runner.update_config(provider=provider)
                 log.info("LLM provider switched to: %s", provider)
                 await ws.send_json({"type": "provider_set", "provider": provider})
             else:
@@ -251,8 +315,8 @@ async def handle_ws(request: web.Request) -> web.WebSocketResponse:
             if provider in ("claude", "openai", "ollama"):
                 llm_provider = provider
                 llm_model = model if provider == "ollama" else ""
-                orchestrator.update_config(provider=llm_provider, model=llm_model)
-                orchestrator.clear_history()
+                runner.update_config(provider=llm_provider, model=llm_model)
+                runner.clear_history()
                 log.info("Model switched: provider=%s, model=%s (conversation cleared)", provider, model)
                 await ws.send_json({"type": "model_set", "provider": provider, "model": model})
             else:
@@ -338,6 +402,16 @@ async def handle_ws(request: web.Request) -> web.WebSocketResponse:
                     asyncio.create_task(_do_agent_reply(text))
             else:
                 await ws.send_json({"type": "error", "message": "No WebRTC session"})
+
+        elif msg_type == "chat":
+            # Text-only chat (no mic/WebRTC needed) — useful for testing
+            text = msg.get("text", "").strip()
+            if text:
+                _refresh_orchestrator_tools()
+                await _safe_ws_send({"type": "transcription", "text": text, "partial": False})
+                asyncio.create_task(_do_agent_reply(text))
+            else:
+                await ws.send_json({"type": "error", "message": "Empty chat text"})
 
         elif msg_type == "set_search_enabled":
             search_enabled = msg.get("enabled", True)

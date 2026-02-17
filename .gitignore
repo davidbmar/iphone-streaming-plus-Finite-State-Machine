@@ -23,3 +23,5 @@ certs/
 
 # Environment
 .env
+.tunnel-config
+get-pip.py

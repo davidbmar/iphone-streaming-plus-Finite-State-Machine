@@ -7,9 +7,24 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@400;500;600;700&family=Raleway:wght@300;400;500;600&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="/static/styles.css?v=25">
+    <link rel="stylesheet" href="/static/styles.css?v=31">
 </head>
 <body>
+<div id="app-layout">
+
+<!-- Debug panels (workflow map + code view) — hidden until workflow starts -->
+<div id="debug-backdrop" class="debug-backdrop"></div>
+<div id="debug-panels" class="debug-panels">
+    <div id="workflow-map-panel" class="panel-map">
+        <h3>Workflow Map</h3>
+        <div id="workflow-map"></div>
+    </div>
+    <div id="workflow-code-panel" class="panel-code">
+        <h3>Code View</h3>
+        <div id="workflow-code"></div>
+    </div>
+</div>
+
 <div class="container">
 
     <!-- Screen 1: Connect -->
@@ -31,6 +46,16 @@
                 <input type="password" id="token-input" placeholder="Enter token">
                 <button class="btn-primary" id="connect-btn">Establish Link</button>
                 <p class="connect-status" id="connect-status"></p>
+                <div id="connect-progress" class="connect-progress hidden">
+                    <div class="cp-segments">
+                        <div class="cp-seg" data-step="1"></div>
+                        <div class="cp-seg" data-step="2"></div>
+                        <div class="cp-seg" data-step="3"></div>
+                        <div class="cp-seg" data-step="4"></div>
+                        <div class="cp-seg" data-step="5"></div>
+                    </div>
+                    <div class="cp-label" id="connect-progress-label"></div>
+                </div>
             </div>
         </div>
     </div>
@@ -43,6 +68,7 @@
                 <select id="provider-select"></select>
                 <select id="voice-select"></select>
                 <button id="search-toggle" class="search-toggle active" title="Web Search">&#x1F50D; Search</button>
+                <button id="debug-toggle" class="debug-toggle" title="Workflow Debugger">&#x25C9; Debug</button>
                 <div id="download-bar" class="hidden">
                     <span id="download-label"></span>
                     <div class="progress-track"><div class="progress-fill" id="download-fill"></div></div>
@@ -61,11 +87,14 @@
     </div>
 
 </div>
+</div><!-- end #app-layout -->
 
 <!-- Config injected by server -->
 <script>
     window.__CONFIG__ = __ICE_SERVERS_PLACEHOLDER__;
 </script>
-<script src="/static/app.js?v=25"></script>
+<script src="/static/workflow-map.js?v=2"></script>
+<script src="/static/workflow-code.js?v=2"></script>
+<script src="/static/app.js?v=31"></script>
 </body>
 </html>

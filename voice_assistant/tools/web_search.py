@@ -1,4 +1,4 @@
-"""Web search tool — Tavily -> Brave -> DuckDuckGo fallback chain.
+"""Web search tool — Serper -> Tavily -> Brave -> DuckDuckGo fallback chain.
 
 Uses native tool-calling: the model decides to call web_search,
 the orchestrator executes it, and the result goes back as a tool-role
@@ -23,7 +23,7 @@ _HTML_ENTITY_RE = re.compile(r"&#x[0-9a-fA-F]+;|&[a-z]+;")
 
 log = logging.getLogger("tools.web_search")
 
-MAX_RESULTS = 5
+MAX_RESULTS = 8
 SNIPPET_MAX_LEN = 500
 
 
@@ -64,9 +64,11 @@ class WebSearchTool(BaseTool):
         if not query:
             return "Error: no search query provided."
 
-        # Fallback chain: Tavily -> Brave -> DuckDuckGo
+        # Fallback chain: Serper -> Tavily -> Brave -> DuckDuckGo
         result = None
-        if settings.tavily_api_key:
+        if settings.serper_api_key:
+            result = await self._search_serper(query)
+        if result is None and settings.tavily_api_key:
             result = await self._search_tavily(query)
         if result is None and settings.brave_api_key:
             result = await self._search_brave(query)
@@ -77,6 +79,75 @@ class WebSearchTool(BaseTool):
             return f"Web search failed for '{query}'. All search providers returned no results."
 
         return result
+
+    # ── Serper (Google SERP) ─────────────────────────────────
+
+    async def _search_serper(self, query: str) -> str | None:
+        """Search via Serper.dev — returns Google results with knowledge graph
+        and answer box data that other providers miss."""
+        try:
+            async with httpx.AsyncClient(timeout=settings.search_timeout) as client:
+                resp = await client.post(
+                    "https://google.serper.dev/search",
+                    json={"q": query, "num": MAX_RESULTS},
+                    headers={
+                        "X-API-KEY": settings.serper_api_key,
+                        "Content-Type": "application/json",
+                    },
+                )
+                resp.raise_for_status()
+                data = resp.json()
+
+            lines = [f"Web search results for '{query}':"]
+
+            # Answer box — Google's featured snippet (often has the direct answer)
+            answer_box = data.get("answerBox", {})
+            if answer_box:
+                ab_title = answer_box.get("title", "")
+                ab_answer = answer_box.get("answer", "")
+                ab_snippet = _clean_html(answer_box.get("snippet", ""))
+                ab_list = answer_box.get("list", [])
+                if ab_title:
+                    lines.append(f"Featured: {ab_title}")
+                if ab_answer:
+                    lines.append(f"  {ab_answer}")
+                if ab_snippet:
+                    lines.append(f"  {ab_snippet[:SNIPPET_MAX_LEN]}")
+                for item in ab_list[:10]:
+                    lines.append(f"  - {_clean_html(str(item))}")
+
+            # Knowledge graph — structured entity data
+            kg = data.get("knowledgeGraph", {})
+            if kg:
+                kg_title = kg.get("title", "")
+                kg_type = kg.get("type", "")
+                kg_desc = _clean_html(kg.get("description", ""))
+                if kg_title:
+                    lines.append(f"Knowledge Graph: {kg_title}" +
+                                 (f" ({kg_type})" if kg_type else ""))
+                if kg_desc:
+                    lines.append(f"  {kg_desc[:SNIPPET_MAX_LEN]}")
+                for key, val in kg.get("attributes", {}).items():
+                    lines.append(f"  {key}: {val}")
+
+            # Organic results
+            results = data.get("organic", [])[:MAX_RESULTS]
+            if not results and not answer_box and not kg:
+                return None
+
+            for i, r in enumerate(results, 1):
+                title = _clean_html(r.get("title", "No title"))
+                url = r.get("link", "")
+                snippet = _clean_html(r.get("snippet", "") or "")[:SNIPPET_MAX_LEN]
+                lines.append(f"{i}. {title} ({url})")
+                if snippet:
+                    lines.append(f"   {snippet}")
+
+            log.info("Serper: %d results for '%s'", len(results), query[:60])
+            return "\n".join(lines)
+        except Exception as e:
+            log.warning("Serper search failed: %s", e)
+            return None
 
     # ── Tavily ────────────────────────────────────────────────
 

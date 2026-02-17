@@ -15,6 +15,13 @@ const downloadBar = document.getElementById("download-bar");
 const downloadLabel = document.getElementById("download-label");
 const downloadFill = document.getElementById("download-fill");
 const searchToggle = document.getElementById("search-toggle");
+const debugToggle = document.getElementById("debug-toggle");
+const debugPanels = document.getElementById("debug-panels");
+const debugBackdrop = document.getElementById("debug-backdrop");
+const workflowMapContainer = document.getElementById("workflow-map");
+const workflowCodeContainer = document.getElementById("workflow-code");
+const connectProgress = document.getElementById("connect-progress");
+const connectProgressLabel = document.getElementById("connect-progress-label");
 
 // --- State ---
 let iceServers = window.__CONFIG__ || [];
@@ -28,6 +35,17 @@ let currentSelectValue = ""; // Track previous select value for download revert
 let pendingDownloadModel = ""; // Model currently being downloaded (for auto-select)
 let currentVoice = ""; // Currently selected TTS voice
 let searchEnabled = true; // Web search toggle
+let debugVisible = false; // Workflow debugger panel visibility
+let activeWorkflowId = ""; // Currently running workflow ID
+
+// Workflow activity card state
+let workflowCard = null;
+let workflowTimerInterval = null;
+let workflowTimerStart = 0;
+let workflowCurrentTimeout = 0;
+let workflowStepInfo = {};   // {step, total, stepName, stateId}
+let workflowName = "";
+let workflowStates = [];
 
 // --- Markdown to safe DOM nodes (for agent chat bubbles) ---
 // Uses DOM API (createElement/textContent) exclusively — no innerHTML.
@@ -293,12 +311,14 @@ function connect() {
 
     connectBtn.disabled = true;
     setStatus("Connecting...");
+    setConnectProgress(1);
 
     const proto = location.protocol === "https:" ? "wss:" : "ws:";
     ws = new WebSocket(`${proto}//${location.host}/ws`);
 
     ws.onopen = () => {
         setStatus("Authenticating...");
+        setConnectProgress(2);
         sendMsg("hello", { token });
     };
 
@@ -316,6 +336,7 @@ function connect() {
     ws.onerror = () => {
         setStatus("Connection failed", true);
         connectBtn.disabled = false;
+        hideConnectProgress();
     };
 
     ws.onclose = () => {
@@ -325,6 +346,7 @@ function connect() {
         }
         setStatus("Disconnected", true);
         connectBtn.disabled = false;
+        hideConnectProgress();
         cleanupWebRTC();
     };
 }
@@ -332,6 +354,30 @@ function connect() {
 function setStatus(text, isError) {
     connectStatus.textContent = text;
     connectStatus.className = "connect-status" + (isError ? " error" : "");
+}
+
+// Connection stages: 1=WS  2=Auth  3=Mic  4=ICE  5=Connected
+var connectStageLabels = ["", "Opening channel", "Authenticating", "Microphone access", "Negotiating audio", "Link established"];
+
+function setConnectProgress(stage) {
+    if (!connectProgress) return;
+    connectProgress.classList.remove("hidden");
+    var segs = connectProgress.querySelectorAll(".cp-seg");
+    for (var i = 0; i < segs.length; i++) {
+        segs[i].classList.remove("done", "active");
+        if (i < stage - 1) {
+            segs[i].classList.add("done");
+        } else if (i === stage - 1) {
+            segs[i].classList.add("active");
+        }
+    }
+    if (connectProgressLabel) {
+        connectProgressLabel.textContent = connectStageLabels[stage] || "";
+    }
+}
+
+function hideConnectProgress() {
+    if (connectProgress) connectProgress.classList.add("hidden");
 }
 
 function handleMessage(msg) {
@@ -401,8 +447,105 @@ function handleMessage(msg) {
             break;
 
         case "agent_reply":
+            // Dismiss workflow card before showing final answer
+            dismissWorkflowCard();
+            // Remove narration bubble
+            {
+                var narr = conversationLog.querySelector(".msg-narration");
+                if (narr) narr.remove();
+            }
             addChatBubble(msg.text, "agent");
             setAgentSpeaking(true);
+            // If no workflow was active, clean up any stale workflow UI
+            if (!activeWorkflowId) {
+                hideDebugPanels();
+            }
+            break;
+
+        case "workflow_start":
+            activeWorkflowId = msg.workflow_id || "";
+            workflowName = (msg.name || "WORKFLOW").toUpperCase();
+            workflowStates = msg.states || [];
+            // Render workflow graph and code view
+            if (window.WorkflowMap && workflowMapContainer) {
+                window.WorkflowMap.render(workflowMapContainer, msg);
+            }
+            if (window.WorkflowCode && workflowCodeContainer) {
+                window.WorkflowCode.render(workflowCodeContainer, msg);
+            }
+            // Auto-show debug panels
+            showDebugPanels();
+            // Show activity card in chat
+            showWorkflowCard();
+            break;
+
+        case "workflow_narration":
+            if (workflowCard) {
+                // Update activity text inside the card
+                var actEl = workflowCard.querySelector(".wfc-activity");
+                if (actEl) actEl.textContent = msg.text || "";
+            } else {
+                showNarrationBubble(msg.text || "");
+            }
+            break;
+
+        case "workflow_state":
+            // Highlight active/visited node in graph
+            if (window.WorkflowMap) {
+                window.WorkflowMap.highlight(
+                    msg.state_id,
+                    msg.status,
+                    msg.detail || ""
+                );
+            }
+            // Highlight code block
+            if (msg.status === "active" && window.WorkflowCode) {
+                window.WorkflowCode.highlight(msg.state_id);
+            }
+            // Update activity card step progress
+            if (msg.status === "active" && msg.step && msg.total) {
+                updateWorkflowCardStep(msg.step, msg.total, msg.step_name || "", msg.state_id || "");
+            }
+            break;
+
+        case "workflow_activity":
+            updateWorkflowCardActivity(msg.activity || "", msg.timeout_secs || 0);
+            break;
+
+        case "workflow_debug":
+            updateWorkflowCardDebug(msg);
+            break;
+
+        case "workflow_loop_update":
+            if (window.WorkflowMap) {
+                window.WorkflowMap.updateLoop(
+                    msg.state_id,
+                    msg.children || [],
+                    typeof msg.active_index === "number" ? msg.active_index : -1
+                );
+            }
+            // Update activity card step label with loop iteration
+            if (workflowCard && typeof msg.active_index === "number" && msg.active_index >= 0) {
+                var label = workflowCard.querySelector(".wfc-step-label");
+                var childCount = (msg.children || []).length;
+                if (label && workflowStepInfo.step) {
+                    label.textContent = "Step " + workflowStepInfo.step + " of " + workflowStepInfo.total +
+                        " \u2014 " + (workflowStepInfo.stepName || "").toUpperCase() +
+                        " (" + (msg.active_index + 1) + "/" + childCount + ")";
+                }
+            }
+            break;
+
+        case "workflow_exit":
+            activeWorkflowId = "";
+            // Flash exit node
+            if (window.WorkflowMap) {
+                window.WorkflowMap.highlight("__exit__", "active", "");
+                setTimeout(function () {
+                    window.WorkflowMap.highlight("__exit__", "visited", "");
+                }, 2000);
+            }
+            dismissWorkflowCard();
             break;
 
         case "pull_started":
@@ -472,16 +615,19 @@ function handleMessage(msg) {
 // --- WebRTC ---
 async function startWebRTC() {
     setStatus("Setting up mic...");
+    setConnectProgress(3);
 
     try {
         micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
     } catch (e) {
         setStatus("Mic access denied", true);
         connectBtn.disabled = false;
+        hideConnectProgress();
         return;
     }
 
     setStatus("Connecting audio...");
+    setConnectProgress(4);
 
     try {
     const config = { iceServers: iceServers.length > 0 ? iceServers : undefined };
@@ -494,8 +640,12 @@ async function startWebRTC() {
         const state = pc.iceConnectionState;
         console.log("ICE state:", state);
         if (state === "connected" || state === "completed") {
-            connectScreen.classList.add("hidden");
-            agentScreen.classList.remove("hidden");
+            setConnectProgress(5);
+            setTimeout(function () {
+                hideConnectProgress();
+                connectScreen.classList.add("hidden");
+                agentScreen.classList.remove("hidden");
+            }, 400);
             talkBtn.disabled = false;
 
             if (audioEl) {
@@ -504,6 +654,7 @@ async function startWebRTC() {
         } else if (state === "failed") {
             setStatus("Audio connection failed — check network", true);
             connectBtn.disabled = false;
+            hideConnectProgress();
             cleanupWebRTC();
         } else if (state === "disconnected") {
             setStatus("Audio disconnected — reconnecting...", true);
@@ -527,6 +678,7 @@ async function startWebRTC() {
         console.error("WebRTC setup error:", err);
         setStatus("WebRTC error: " + err.message, true);
         connectBtn.disabled = false;
+        hideConnectProgress();
     }
 }
 
@@ -596,6 +748,220 @@ function stopSpeaking() {
     setAgentSpeaking(false);
 }
 
+// --- Debug panel helpers ---
+function showDebugPanels() {
+    if (debugPanels) {
+        debugPanels.classList.add("visible");
+        if (debugBackdrop) debugBackdrop.classList.add("visible");
+        debugVisible = true;
+        debugToggle.classList.add("active");
+    }
+}
+
+function hideDebugPanels() {
+    if (debugPanels) {
+        debugPanels.classList.remove("visible");
+        if (debugBackdrop) debugBackdrop.classList.remove("visible");
+        debugVisible = false;
+        debugToggle.classList.remove("active");
+    }
+}
+
+function toggleDebugPanels() {
+    if (debugVisible) {
+        hideDebugPanels();
+    } else {
+        showDebugPanels();
+    }
+}
+
+// --- Workflow Activity Card (persistent in-chat card) ---
+
+function showWorkflowCard() {
+    // Remove stale indicators
+    var el;
+    el = conversationLog.querySelector(".thinking"); if (el) el.remove();
+    el = conversationLog.querySelector(".searching"); if (el) el.remove();
+    el = conversationLog.querySelector(".msg-narration"); if (el) el.remove();
+
+    // Don't create duplicate
+    if (workflowCard) workflowCard.remove();
+
+    var card = document.createElement("div");
+    card.className = "workflow-card";
+
+    // Header
+    var header = document.createElement("div");
+    header.className = "wfc-header";
+    header.textContent = workflowName || "WORKFLOW";
+    card.appendChild(header);
+
+    // Segmented progress bar
+    var progress = document.createElement("div");
+    progress.className = "wfc-progress";
+    var segCount = workflowStates.length || 4;
+    for (var i = 0; i < segCount; i++) {
+        var seg = document.createElement("div");
+        seg.className = "wfc-segment";
+        seg.dataset.idx = i;
+        progress.appendChild(seg);
+    }
+    card.appendChild(progress);
+
+    // Step label
+    var stepLabel = document.createElement("div");
+    stepLabel.className = "wfc-step-label";
+    stepLabel.textContent = "";
+    card.appendChild(stepLabel);
+
+    // Activity text
+    var activity = document.createElement("div");
+    activity.className = "wfc-activity";
+    activity.textContent = "";
+    card.appendChild(activity);
+
+    // Timer row
+    var timerRow = document.createElement("div");
+    timerRow.className = "wfc-timer-row";
+
+    var timerTrack = document.createElement("div");
+    timerTrack.className = "wfc-timer-track";
+    var timerFill = document.createElement("div");
+    timerFill.className = "wfc-timer-fill";
+    timerTrack.appendChild(timerFill);
+
+    var timerText = document.createElement("div");
+    timerText.className = "wfc-timer-text";
+    timerText.textContent = "";
+
+    timerRow.appendChild(timerTrack);
+    timerRow.appendChild(timerText);
+    card.appendChild(timerRow);
+
+    // Debug info row
+    var debugRow = document.createElement("div");
+    debugRow.className = "wfc-debug";
+    debugRow.textContent = "";
+    card.appendChild(debugRow);
+
+    conversationLog.appendChild(card);
+    conversationLog.scrollTop = conversationLog.scrollHeight;
+    workflowCard = card;
+}
+
+function updateWorkflowCardStep(step, total, stepName, stateId) {
+    if (!workflowCard) return;
+    workflowStepInfo = { step: step, total: total, stepName: stepName, stateId: stateId };
+
+    // Update progress segments
+    var segs = workflowCard.querySelectorAll(".wfc-segment");
+    for (var i = 0; i < segs.length; i++) {
+        segs[i].classList.remove("active", "visited");
+        if (i < step - 1) {
+            segs[i].classList.add("visited");
+        } else if (i === step - 1) {
+            segs[i].classList.add("active");
+        }
+    }
+
+    // Update step label
+    var label = workflowCard.querySelector(".wfc-step-label");
+    if (label) {
+        label.textContent = "Step " + step + " of " + total + " \u2014 " + (stepName || stateId || "").toUpperCase();
+    }
+}
+
+function updateWorkflowCardActivity(activity, timeoutSecs) {
+    if (!workflowCard) return;
+
+    // Update activity text
+    var actEl = workflowCard.querySelector(".wfc-activity");
+    if (actEl) actEl.textContent = activity;
+
+    // Reset timer
+    clearInterval(workflowTimerInterval);
+    workflowTimerStart = Date.now();
+    workflowCurrentTimeout = timeoutSecs || 0;
+
+    var fill = workflowCard.querySelector(".wfc-timer-fill");
+    var text = workflowCard.querySelector(".wfc-timer-text");
+    if (!fill || !text) return;
+
+    // Reset fill bar
+    fill.style.width = "0%";
+    fill.classList.remove("wfc-timer-warn");
+
+    if (workflowCurrentTimeout <= 0) {
+        text.textContent = "";
+        return;
+    }
+
+    function tick() {
+        var elapsed = (Date.now() - workflowTimerStart) / 1000;
+        var pct = Math.min((elapsed / workflowCurrentTimeout) * 100, 100);
+        fill.style.width = pct + "%";
+        text.textContent = Math.floor(elapsed) + "s / " + Math.floor(workflowCurrentTimeout) + "s";
+        if (pct >= 80) {
+            fill.classList.add("wfc-timer-warn");
+        } else {
+            fill.classList.remove("wfc-timer-warn");
+        }
+    }
+
+    tick();
+    workflowTimerInterval = setInterval(tick, 1000);
+}
+
+function updateWorkflowCardDebug(msg) {
+    if (!workflowCard) return;
+    var dbg = workflowCard.querySelector(".wfc-debug");
+    if (!dbg) return;
+
+    var thinkInfo = "";
+    if (msg.think_tokens > 0) {
+        thinkInfo = " | think:" + msg.think_tokens + "tok(" + (msg.think_detected || "?") + ")";
+    }
+    var totalSec = (msg.total_ms / 1000).toFixed(1);
+    dbg.textContent = msg.step + " \u2014 " + msg.model +
+        " | " + msg.eval_tokens + " tok @ " + msg.tok_per_sec + " tok/s" +
+        " | out:" + msg.raw_chars + "ch" +
+        thinkInfo +
+        " | prompt:" + msg.prompt_tokens + " tok" +
+        " | " + totalSec + "s";
+}
+
+function dismissWorkflowCard() {
+    clearInterval(workflowTimerInterval);
+    workflowTimerInterval = null;
+    if (!workflowCard) return;
+
+    workflowCard.classList.add("wfc-exit");
+    var card = workflowCard;
+    workflowCard = null;
+    setTimeout(function () {
+        if (card.parentNode) card.parentNode.removeChild(card);
+    }, 500);
+}
+
+// --- Workflow narration bubble in chat ---
+function showNarrationBubble(text) {
+    // Remove previous narration bubble (replace, don't stack)
+    var prev = conversationLog.querySelector(".msg-narration");
+    if (prev) prev.remove();
+
+    // Also remove thinking/searching indicators
+    var thinking = conversationLog.querySelector(".thinking");
+    if (thinking) thinking.remove();
+    var searching = conversationLog.querySelector(".searching");
+    if (searching) searching.remove();
+
+    var el = document.createElement("div");
+    el.className = "msg-narration";
+    el.textContent = text;
+    conversationLog.appendChild(el);
+    conversationLog.scrollTop = conversationLog.scrollHeight;
+}
+
 // --- Keepalive (backs up server-side WebSocket heartbeat) ---
 setInterval(() => { sendMsg("ping"); }, 15000);
 
@@ -608,6 +974,16 @@ searchToggle.addEventListener("click", () => {
     searchToggle.classList.toggle("active", searchEnabled);
     sendMsg("set_search_enabled", { enabled: searchEnabled });
 });
+
+debugToggle.addEventListener("click", () => {
+    toggleDebugPanels();
+});
+
+if (debugBackdrop) {
+    debugBackdrop.addEventListener("click", () => {
+        hideDebugPanels();
+    });
+}
 
 providerSelect.addEventListener("change", () => {
     const value = providerSelect.value;

@@ -5,6 +5,7 @@ import functools
 import json
 import logging
 import os
+from typing import Optional
 
 log = logging.getLogger("llm")
 
@@ -13,7 +14,7 @@ LLM_PROVIDER = os.getenv("LLM_PROVIDER", "").lower()
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
-OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen2.5:14b")
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen3:8b")
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
 
 # Curated Ollama models — fast, conversational, good for voice agent
@@ -75,7 +76,7 @@ def _get_httpx():
     global _httpx_client
     if _httpx_client is None:
         import httpx
-        _httpx_client = httpx.Client(timeout=30.0)
+        _httpx_client = httpx.Client(timeout=120.0)
         log.info("httpx client initialized for Ollama at %s", OLLAMA_URL)
     return _httpx_client
 
@@ -84,7 +85,7 @@ def _get_async_httpx():
     global _async_httpx_client
     if _async_httpx_client is None:
         import httpx
-        _async_httpx_client = httpx.AsyncClient(timeout=30.0)
+        _async_httpx_client = httpx.AsyncClient(timeout=120.0)
         log.info("async httpx client initialized for Ollama at %s", OLLAMA_URL)
     return _async_httpx_client
 
@@ -229,22 +230,85 @@ def _generate_openai(system: str, messages: list[dict]) -> str:
     return text
 
 
-def _generate_ollama(system: str, messages: list[dict], model: str = "") -> str:
-    """Call Ollama local model via HTTP (synchronous)."""
+def _generate_ollama(system: str, messages: list[dict], model: str = "",
+                     think: Optional[bool] = None) -> str:
+    """Call Ollama local model via HTTP (synchronous).
+
+    Args:
+        think: Control Qwen3 thinking mode. None=model default, False=disable,
+               True=enable. Disabling avoids hidden reasoning token overhead.
+    """
     client = _get_httpx()
     active_model = model or OLLAMA_MODEL
     ollama_messages = [{"role": "system", "content": system}] + messages
-    resp = client.post(
-        f"{OLLAMA_URL}/api/chat",
-        json={"model": active_model, "messages": ollama_messages, "stream": False},
-    )
+    body: dict = {"model": active_model, "messages": ollama_messages, "stream": False}
+    if think is not None:
+        body["think"] = think
+    resp = client.post(f"{OLLAMA_URL}/api/chat", json=body)
     resp.raise_for_status()
-    text = resp.json()["message"]["content"]
-    log.info("Ollama response (%s): %d chars", active_model, len(text))
+    data = resp.json()
+    text = data["message"]["content"]
+
+    # Diagnostic logging: token counts, timing, thinking overhead
+    raw_len = len(text)
+    eval_count = data.get("eval_count", 0)
+    prompt_eval_count = data.get("prompt_eval_count", 0)
+    total_duration_ms = data.get("total_duration", 0) / 1e6  # ns → ms
+    eval_duration_ms = data.get("eval_duration", 0) / 1e6
+    prompt_eval_ms = data.get("prompt_eval_duration", 0) / 1e6
+    load_ms = data.get("load_duration", 0) / 1e6
+
+    # Detect thinking — either visible <think> tags or hidden (Ollama 0.6+ strips them)
+    think_tokens = 0
+    think_detected = ""
+    if "<think>" in text and "</think>" in text:
+        think_start = text.index("<think>")
+        think_end = text.index("</think>") + len("</think>")
+        think_content = text[think_start:think_end]
+        think_tokens = len(think_content.split())
+        think_detected = "visible"
+    elif eval_count > 0 and raw_len > 0:
+        # Heuristic: typical text is ~4 chars/token. If ratio is >20 tokens
+        # per visible char, Ollama likely stripped <think> blocks.
+        chars_per_token = raw_len / eval_count
+        if chars_per_token < 0.5:  # < 0.5 chars per token = heavy thinking
+            think_tokens = eval_count - max(1, raw_len // 4)  # estimate
+            think_detected = "hidden"
+
+    tok_per_sec = (eval_count / (eval_duration_ms / 1000)) if eval_duration_ms > 0 else 0
+    think_label = f", ~{think_tokens} think tokens ({think_detected})" if think_tokens else ""
+    log.info(
+        "Ollama response (%s): %d chars, %d eval tokens%s | "
+        "prompt_eval=%d tokens (%.0fms) | eval=%.0fms (%.1f tok/s) | "
+        "load=%.0fms | total=%.0fms",
+        active_model, raw_len, eval_count, think_label,
+        prompt_eval_count, prompt_eval_ms,
+        eval_duration_ms, tok_per_sec,
+        load_ms, total_duration_ms,
+    )
+    # Store diagnostics for callers to read
+    last_diagnostics.update({
+        "model": active_model,
+        "raw_chars": raw_len,
+        "think_tokens": think_tokens,
+        "think_detected": think_detected,
+        "prompt_tokens": prompt_eval_count,
+        "eval_tokens": eval_count,
+        "tok_per_sec": round(tok_per_sec, 1),
+        "prompt_eval_ms": round(prompt_eval_ms),
+        "eval_ms": round(eval_duration_ms),
+        "load_ms": round(load_ms),
+        "total_ms": round(total_duration_ms),
+    })
     return text
 
 
-def _generate_sync(system: str, messages: list[dict], provider: str = "", model: str = "") -> str:
+# Module-level diagnostics dict — updated after each Ollama call
+last_diagnostics: dict = {}
+
+
+def _generate_sync(system: str, messages: list[dict], provider: str = "",
+                   model: str = "", think: Optional[bool] = None) -> str:
     """Synchronous generate — dispatches to the given or default provider."""
     provider = provider or _resolve_provider()
     log.info("LLM generate: provider=%s, model=%s, %d messages", provider, model, len(messages))
@@ -253,10 +317,11 @@ def _generate_sync(system: str, messages: list[dict], provider: str = "", model:
     elif provider == "openai":
         return _generate_openai(system, messages)
     else:
-        return _generate_ollama(system, messages, model=model)
+        return _generate_ollama(system, messages, model=model, think=think)
 
 
-async def generate(system: str, messages: list[dict], provider: str = "", model: str = "") -> str:
+async def generate(system: str, messages: list[dict], provider: str = "",
+                   model: str = "", think: Optional[bool] = None) -> str:
     """Generate an LLM response (runs in thread pool).
 
     Args:
@@ -264,12 +329,13 @@ async def generate(system: str, messages: list[dict], provider: str = "", model:
         messages: Conversation messages [{"role": "user"/"assistant", "content": "..."}].
         provider: Override provider ("claude", "openai", "ollama"). Empty = use default.
         model: Override model name (for Ollama). Empty = use OLLAMA_MODEL env var.
+        think: Control Qwen3 thinking mode (Ollama only). None=default, False=off.
 
     Returns:
         The assistant's reply text.
     """
     loop = asyncio.get_event_loop()
-    fn = functools.partial(_generate_sync, system, messages, provider, model)
+    fn = functools.partial(_generate_sync, system, messages, provider, model, think)
     return await loop.run_in_executor(None, fn)
 
 

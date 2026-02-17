@@ -52,10 +52,57 @@ else
 fi
 
 # ── Start cloudflared tunnel ─────────────────────────────────
-echo "  Starting Cloudflare Tunnel..."
-cloudflared tunnel --url "http://localhost:$PORT" > "$TUNNEL_LOG" 2>&1 &
-CF_PID=$!
-echo "  cloudflared PID: $CF_PID"
+TUNNEL_CONFIG="$REPO_ROOT/.tunnel-config"
+
+if [ -f "$TUNNEL_CONFIG" ]; then
+  # Named tunnel (permanent URL)
+  # shellcheck disable=SC1090
+  source "$TUNNEL_CONFIG"
+  echo "  Using named tunnel: $TUNNEL_NAME"
+  echo "  Starting Cloudflare Tunnel..."
+  cloudflared tunnel --url "http://localhost:$PORT" run "$TUNNEL_NAME" > "$TUNNEL_LOG" 2>&1 &
+  CF_PID=$!
+  echo "  cloudflared PID: $CF_PID"
+  TUNNEL_URL="$TUNNEL_URL"
+
+  echo "  Waiting for tunnel to connect..."
+  for i in $(seq 1 30); do
+    if grep -q "Registered tunnel connection" "$TUNNEL_LOG" 2>/dev/null; then
+      break
+    fi
+    sleep 1
+  done
+
+  if ! grep -q "Registered tunnel connection" "$TUNNEL_LOG" 2>/dev/null; then
+    echo "WARNING: Tunnel may not be fully connected yet."
+    echo "  Check: $TUNNEL_LOG"
+  fi
+else
+  # Quick tunnel (random URL)
+  echo "  No named tunnel found. Using quick tunnel."
+  echo "  Tip: run 'bash scripts/setup_tunnel.sh' for a permanent URL."
+  echo ""
+  echo "  Starting Cloudflare Tunnel..."
+  cloudflared tunnel --ha-connections 4 --url "http://localhost:$PORT" > "$TUNNEL_LOG" 2>&1 &
+  CF_PID=$!
+  echo "  cloudflared PID: $CF_PID"
+
+  echo "  Waiting for tunnel URL..."
+  TUNNEL_URL=""
+  for i in $(seq 1 30); do
+    TUNNEL_URL=$(grep -o 'https://[a-z0-9-]*\.trycloudflare\.com' "$TUNNEL_LOG" 2>/dev/null | head -1 || echo "")
+    if [ -n "$TUNNEL_URL" ]; then
+      break
+    fi
+    sleep 1
+  done
+
+  if [ -z "$TUNNEL_URL" ]; then
+    echo "ERROR: Could not capture tunnel URL after 30s"
+    echo "  Check $TUNNEL_LOG"
+    exit 1
+  fi
+fi
 
 # Cleanup on exit
 cleanup() {
@@ -68,23 +115,6 @@ cleanup() {
   fi
 }
 trap cleanup EXIT
-
-# ── Wait for tunnel URL ──────────────────────────────────────
-echo "  Waiting for tunnel URL..."
-TUNNEL_URL=""
-for i in $(seq 1 30); do
-  TUNNEL_URL=$(grep -o 'https://[a-z0-9-]*\.trycloudflare\.com' "$TUNNEL_LOG" 2>/dev/null | head -1 || echo "")
-  if [ -n "$TUNNEL_URL" ]; then
-    break
-  fi
-  sleep 1
-done
-
-if [ -z "$TUNNEL_URL" ]; then
-  echo "ERROR: Could not capture tunnel URL after 30s"
-  echo "  Check $TUNNEL_LOG"
-  exit 1
-fi
 
 echo ""
 echo "  Tunnel URL: $TUNNEL_URL"

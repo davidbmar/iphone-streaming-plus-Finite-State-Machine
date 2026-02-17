@@ -38,7 +38,9 @@ def get_tool(name: str):
 from .web_search import WebSearchTool
 from .calendar import CalendarTool
 from .notes import NotesTool
+from .datetime_tool import DateTimeTool
 
 register_tool(WebSearchTool)
 register_tool(CalendarTool)
 register_tool(NotesTool)
+register_tool(DateTimeTool)

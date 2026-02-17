@@ -4,3 +4,5 @@ S-2026-02-15-1749-rich-model-selection | 2026-02-15 | Rich Model Selection with 
 S-2026-02-16-0420-web-search-integration | 2026-02-16 | Web Search Integration with Tavily/Brave/DuckDuckGo Fallback
 S-2026-02-16-1627-test-suite-orchestrator-plan | 2026-02-16 | Post-build test suite + orchestrator unification plan
 S-2026-02-16-1653-orchestrator-unification | 2026-02-16 | Unified Orchestrator — Merge Dual Agent Loops
+S-2026-02-16-1802-hybrid-fsm-workflow | 2026-02-16 | Hybrid FSM + LLM Workflow System with Visual Debugger
+ |  | 

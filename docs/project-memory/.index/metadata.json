@@ -40,4 +40,11 @@
     "date": "2026-02-16",
     "file": "S-2026-02-16-1653-orchestrator-unification.md"
   }
+,
+  {
+    "sessionId": "S-2026-02-16-1802-hybrid-fsm-workflow",
+    "title": "Hybrid FSM + LLM Workflow System with Visual Debugger",
+    "date": "2026-02-16",
+    "file": "S-2026-02-16-1802-hybrid-fsm-workflow.md"
+  }
 ]

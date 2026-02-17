@@ -19,7 +19,8 @@ import sys
 from rich.console import Console
 from rich.text import Text
 
-from engine.orchestrator import Orchestrator, OrchestratorConfig
+from engine.orchestrator import OrchestratorConfig
+from engine.workflow import WorkflowRunner
 from engine.llm import list_ollama_models, pull_ollama_model
 
 from .config import settings
@@ -45,6 +46,28 @@ async def _tool_call_callback(name: str, args: dict) -> None:
     """Display tool calls in real time."""
     args_str = ", ".join(f"{k}={v!r}" for k, v in args.items()) if args else ""
     console.print(f"  [cyan dim]tool:[/] [cyan]{name}[/]({args_str})")
+
+
+async def _workflow_start_callback(workflow_id, wf) -> None:
+    """Display workflow activation."""
+    console.print(f"  [magenta dim]workflow:[/] [magenta]{wf.name}[/] ({workflow_id})")
+
+
+async def _workflow_state_callback(state_id, status, **kwargs) -> None:
+    """Display workflow state transitions."""
+    detail = kwargs.get("detail", "")
+    if status == "active":
+        msg = f"  [cyan dim]step:[/] [cyan]{state_id}[/]"
+        if detail:
+            msg += f"  ({detail})"
+        console.print(msg)
+    elif status == "visited":
+        console.print(f"  [dim]  done: {state_id}[/]")
+
+
+async def _workflow_exit_callback(workflow_id) -> None:
+    """Display workflow completion."""
+    console.print(f"  [magenta dim]workflow done:[/] {workflow_id}")
 
 
 async def _ensure_ollama_model() -> str:
@@ -99,7 +122,7 @@ async def _run_repl() -> None:
         console.print("[red]No model available. Install one with: ollama pull qwen3:8b[/]")
         return
 
-    # Build orchestrator with Ollama config + tool registry
+    # Build workflow runner with Ollama config + tool registry
     config = OrchestratorConfig(
         provider="ollama",
         model=active_model,
@@ -109,7 +132,10 @@ async def _run_repl() -> None:
         max_history=settings.max_history_messages,
         on_tool_call=_tool_call_callback,
     )
-    orchestrator = Orchestrator(config=config)
+    runner = WorkflowRunner(config=config)
+    runner.on_workflow_start = _workflow_start_callback
+    runner.on_workflow_state = _workflow_state_callback
+    runner.on_workflow_exit = _workflow_exit_callback
 
     console.print(f"[bold]Voice Assistant[/] [dim]({active_model})[/]")
     console.print("[dim]Type 'quit' to exit, 'clear' to reset conversation.[/]\n")
@@ -127,13 +153,13 @@ async def _run_repl() -> None:
             console.print("[dim]Goodbye![/]")
             break
         if user_input.lower() == "clear":
-            orchestrator.clear_history()
+            runner.clear_history()
             console.print("[dim]Conversation cleared.[/]\n")
             continue
 
         with console.status("[dim]Thinking...[/]", spinner="dots"):
             try:
-                response = await orchestrator.chat(user_input)
+                response = await runner.chat(user_input)
             except Exception as e:
                 console.print(f"[red]Error: {e}[/]\n")
                 continue

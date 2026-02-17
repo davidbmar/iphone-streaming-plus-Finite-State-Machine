@@ -18,6 +18,7 @@ try:
         ollama_fallback_model: str = "qwen2.5:14b"
 
         # Search API keys
+        serper_api_key: str = ""
         brave_api_key: str = ""
         tavily_api_key: str = ""
 
@@ -42,6 +43,7 @@ except ImportError:
             self.ollama_url = os.getenv("OLLAMA_URL", "http://localhost:11434")
             self.ollama_model = os.getenv("OLLAMA_MODEL", "qwen3:8b")
             self.ollama_fallback_model = os.getenv("OLLAMA_FALLBACK_MODEL", "qwen2.5:14b")
+            self.serper_api_key = os.getenv("SERPER_API_KEY", "")
             self.brave_api_key = os.getenv("BRAVE_API_KEY", "")
             self.tavily_api_key = os.getenv("TAVILY_API_KEY", "")
             self.max_tool_calls_per_turn = int(os.getenv("MAX_TOOL_CALLS_PER_TURN", "5"))

@@ -691,6 +691,113 @@ def test_adapter_voices():
         report("adapter voices tests", False, str(e))
 
 
+# ── 1.17 Workflow module ──────────────────────────────────
+
+def test_workflow_module():
+    section("Workflow module (engine/workflow.py)")
+    try:
+        from engine.workflow import (
+            WorkflowRunner, WORKFLOW_TEMPLATES, _route_by_keywords,
+            _maybe_parse_json, _render_template, get_workflow_def_for_client,
+            WorkflowContext,
+        )
+
+        # Templates registered
+        report("3 workflow templates registered",
+               len(WORKFLOW_TEMPLATES) == 3,
+               f"got {len(WORKFLOW_TEMPLATES)}")
+        report("research_compare template exists",
+               "research_compare" in WORKFLOW_TEMPLATES)
+        report("deep_research template exists",
+               "deep_research" in WORKFLOW_TEMPLATES)
+        report("fact_check template exists",
+               "fact_check" in WORKFLOW_TEMPLATES)
+
+        # Each template has steps
+        for wf_id, wf in WORKFLOW_TEMPLATES.items():
+            report(f"{wf_id} has steps",
+                   len(wf.steps) >= 3,
+                   f"{len(wf.steps)} steps")
+
+        # research_compare has 4 steps (initial_lookup added)
+        rc = WORKFLOW_TEMPLATES["research_compare"]
+        rc_step_ids = [s.id for s in rc.steps]
+        report("research_compare has 4 steps",
+               len(rc.steps) == 4,
+               f"got {len(rc.steps)}: {rc_step_ids}")
+        report("research_compare starts with initial_lookup",
+               rc_step_ids[0] == "initial_lookup",
+               f"first step: {rc_step_ids[0]}")
+        report("initial_lookup has tool_name web_search",
+               rc.steps[0].tool_name == "web_search")
+
+        # Narration field exists on steps
+        report("initial_lookup has narration",
+               bool(rc.steps[0].narration),
+               f"narration: {rc.steps[0].narration[:40]}")
+        report("all research_compare steps have narration",
+               all(bool(s.narration) for s in rc.steps),
+               f"narrations: {[bool(s.narration) for s in rc.steps]}")
+
+        # Keyword routing
+        report("routes 'compare Apple and Microsoft' to research_compare",
+               _route_by_keywords("compare Apple and Microsoft market caps") == "research_compare")
+        report("routes 'top 5 stocks by performance' to research_compare",
+               _route_by_keywords("what are the top 5 stocks by performance") == "research_compare")
+        report("routes 'is it true the earth is flat' to fact_check",
+               _route_by_keywords("is it true that the earth is flat") == "fact_check")
+        report("routes 'tell me about quantum computing' to deep_research",
+               _route_by_keywords("tell me about quantum computing in detail") == "deep_research")
+        report("short query skips routing",
+               _route_by_keywords("hello") is None)
+        report("non-matching query returns None",
+               _route_by_keywords("what time is it right now") is None)
+
+        # Template rendering
+        ctx = WorkflowContext(user_query="test query")
+        ctx.search_queries = ["q1", "q2"]
+        rendered = _render_template("User asked: {{user_query}}, queries: {{search_queries}}", ctx)
+        report("template renders user_query",
+               "test query" in rendered)
+        report("template renders search_queries",
+               "q1" in rendered and "q2" in rendered)
+
+        # JSON parsing
+        report("parses plain JSON",
+               _maybe_parse_json('["a", "b"]') == ["a", "b"])
+        report("parses code-fenced JSON",
+               _maybe_parse_json('```json\n["a", "b"]\n```') == ["a", "b"])
+        report("returns string for non-JSON",
+               _maybe_parse_json("not json") == "not json")
+        report("parses JSON object",
+               _maybe_parse_json('{"key": "val"}') == {"key": "val"})
+
+        # Client serialization
+        client_def = get_workflow_def_for_client("research_compare")
+        report("get_workflow_def_for_client returns dict",
+               isinstance(client_def, dict))
+        report("client def has states",
+               isinstance(client_def.get("states"), list) and len(client_def["states"]) > 0)
+        report("client def has workflow_id",
+               client_def.get("workflow_id") == "research_compare")
+        report("client def states have narration field",
+               all("narration" in s for s in client_def["states"]))
+        report("client def states have tool_name field",
+               all("tool_name" in s for s in client_def["states"]))
+        report("unknown workflow returns None",
+               get_workflow_def_for_client("nonexistent") is None)
+
+        # WorkflowRunner instantiation
+        runner = WorkflowRunner()
+        report("WorkflowRunner instantiates", runner is not None)
+        report("runner has orchestrator", runner.orchestrator is not None)
+        report("runner.chat is callable", callable(runner.chat))
+        report("runner.clear_history is callable", callable(runner.clear_history))
+
+    except Exception as e:
+        report("workflow module tests", False, str(e))
+
+
 # =====================================================================
 # CATEGORY 2: INTEGRATION TESTS  (need local TTS/STT models)
 # =====================================================================
@@ -1075,6 +1182,7 @@ def main():
     test_search_configured()
     test_engine_types()
     test_adapter_voices()
+    test_workflow_module()
 
     if args.quick:
         elapsed = time.time() - start

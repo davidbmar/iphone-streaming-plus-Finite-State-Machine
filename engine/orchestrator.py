@@ -120,10 +120,19 @@ DEFAULT_TOOL_ALIASES: dict[str, str] = {
     "get_notes": "search_notes",
 }
 
-DEFAULT_SYSTEM_PROMPT = (
-    "You are a helpful voice assistant. Keep responses concise — "
-    "one to three sentences. Speak naturally as in a conversation."
-)
+def _default_system_prompt() -> str:
+    """Build system prompt with current date so the model knows 'today'."""
+    from datetime import date
+    today = date.today().strftime("%B %d, %Y")
+    return (
+        f"You are a helpful voice assistant. Today is {today}. "
+        "Keep responses concise — one to three sentences. "
+        "Speak naturally as in a conversation. "
+        "When searching the web, always include the current year in queries "
+        "to get fresh results."
+    )
+
+DEFAULT_SYSTEM_PROMPT = _default_system_prompt()
 
 SEARCH_CLASSIFIER_PROMPT = (
     "Extract a clean web search query from this user message. "
