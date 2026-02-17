@@ -507,6 +507,16 @@ class WorkflowRunner:
         """Access orchestrator messages for compatibility."""
         return self.orchestrator.messages
 
+    @staticmethod
+    def _has_paid_search() -> bool:
+        """Check if a paid search provider is configured (no rate-limit sleep needed)."""
+        import os
+        return bool(
+            os.getenv("SERPER_API_KEY", "")
+            or os.getenv("TAVILY_API_KEY", "")
+            or os.getenv("BRAVE_API_KEY", "")
+        )
+
     # ── Workflow execution ────────────────────────────────
 
     async def _execute_workflow(
@@ -679,8 +689,9 @@ class WorkflowRunner:
 
         results = []
         for i, query in enumerate(queries):
-            # Rate-limit delay between searches to avoid 429 Too Many Requests
-            if i > 0:
+            # Rate-limit delay only for DuckDuckGo (no API key = aggressive 429s).
+            # Serper/Tavily/Brave have proper rate limits and don't need a delay.
+            if i > 0 and not self._has_paid_search():
                 await asyncio.sleep(1.5)
 
             await self._notify_workflow_state(
