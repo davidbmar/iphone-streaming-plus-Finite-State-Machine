@@ -319,7 +319,11 @@ function connect() {
     ws.onopen = () => {
         setStatus("Authenticating...");
         setConnectProgress(2);
-        sendMsg("hello", { token });
+        sendMsg("hello", {
+            token,
+            timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+            local_time: new Date().toISOString(),
+        });
     };
 
     ws.onmessage = (ev) => {

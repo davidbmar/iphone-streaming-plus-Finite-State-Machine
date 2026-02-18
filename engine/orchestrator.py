@@ -118,6 +118,9 @@ DEFAULT_TOOL_ALIASES: dict[str, str] = {
     "search_notes": "search_notes",
     "notes": "search_notes",
     "get_notes": "search_notes",
+    "get_current_datetime": "get_current_datetime",
+    "get_time": "get_current_datetime",
+    "datetime": "get_current_datetime",
 }
 
 def _default_system_prompt() -> str:
@@ -128,6 +131,8 @@ def _default_system_prompt() -> str:
         f"You are a helpful voice assistant. Today is {today}. "
         "Keep responses concise — one to three sentences. "
         "Speak naturally as in a conversation. "
+        "If the user's message seems incomplete or unclear (e.g. cut off mid-sentence), "
+        "briefly ask them to repeat it instead of guessing. "
         "When searching the web, always include the current year in queries "
         "to get fresh results."
     )

@@ -28,6 +28,8 @@ from engine.orchestrator import OrchestratorConfig
 from engine.workflow import WorkflowRunner, get_workflow_def_for_client
 from voice_assistant.tools import get_all_schemas
 from voice_assistant.tool_router import dispatch_tool_call
+from engine.fast_path import try_fast_path
+from engine.input_filter import classify as classify_input, InputQuality
 from gateway.turn import fetch_twilio_turn_credentials
 
 log = logging.getLogger("gateway")
@@ -81,6 +83,7 @@ async def handle_ws(request: web.Request) -> web.WebSocketResponse:
     llm_model = ""  # Empty = use OLLAMA_MODEL env var
     tts_voice = DEFAULT_VOICE
     search_enabled = True  # User toggle, defaults ON
+    client_tz = ""  # IANA timezone from browser (e.g. "America/Chicago")
 
     # ── Orchestrator setup (shared tool registry) ───────────
     # Tools come from voice_assistant/tools/ — same registry for both UIs.
@@ -185,8 +188,38 @@ async def handle_ws(request: web.Request) -> web.WebSocketResponse:
         else:
             runner.update_config(tools=[])
 
-    async def _do_agent_reply(user_text: str) -> None:
+    async def _try_fast_reply(user_text: str) -> bool:
+        """Try fast-path (no LLM). Returns True if handled, False to fall through."""
+        reply = try_fast_path(user_text, client_tz=client_tz)
+        if reply is None:
+            return False
+        if not await _safe_ws_send({"type": "agent_reply", "text": reply}):
+            return True
+        log.info("Fast-path reply: %r (voice=%s)", reply[:80], tts_voice)
+        try:
+            if session:
+                await session.speak_text(reply, voice_id=tts_voice)
+        except Exception as e:
+            log.warning("TTS speak failed: %s", e)
+        return True
+
+    async def _do_agent_reply(
+        user_text: str,
+        no_speech_prob: float = 0.0,
+        avg_logprob: float = 0.0,
+        audio_duration_s: float = 0.0,
+    ) -> None:
         """Run workflow runner + TTS in background so WS loop stays responsive."""
+        # Layer 1: Input quality filter (see engine/input_filter.py)
+        quality = classify_input(user_text, no_speech_prob, avg_logprob, audio_duration_s)
+        if quality != InputQuality.VALID:
+            log.info("Input filter [%s]: dropped %r", quality.value, user_text)
+            return
+
+        # Layer 2: Fast path — answer simple queries without LLM
+        if await _try_fast_reply(user_text):
+            return
+
         try:
             reply = await runner.chat(user_text)
         except Exception as e:
@@ -222,6 +255,23 @@ async def handle_ws(request: web.Request) -> web.WebSocketResponse:
                 await ws.send_json({"type": "error", "message": "Bad token"})
                 await ws.close()
                 break
+            # Inject client timezone into system prompt for time awareness
+            client_tz = msg.get("timezone", "")
+            if client_tz:
+                from datetime import datetime
+                from zoneinfo import ZoneInfo
+                try:
+                    now = datetime.now(ZoneInfo(client_tz))
+                    time_ctx = (
+                        f"The user's timezone is {client_tz}. "
+                        f"Their current local time is {now.strftime('%I:%M %p')} "
+                        f"on {now.strftime('%A, %B %d, %Y')}. "
+                    )
+                    from engine.orchestrator import _default_system_prompt
+                    runner.update_config(system_prompt=time_ctx + _default_system_prompt())
+                    log.info("Client timezone: %s (%s)", client_tz, now.strftime('%I:%M %p %Z'))
+                except Exception:
+                    log.warning("Invalid client timezone: %s", client_tz)
             # Fetch fresh TURN credentials (falls back to ICE_SERVERS_JSON)
             ice_servers = await fetch_twilio_turn_credentials()
             if not ice_servers:
@@ -231,9 +281,16 @@ async def handle_ws(request: web.Request) -> web.WebSocketResponse:
                     ice_servers = []
             tts_voices = list_voices()
             model_catalog = await get_available_models()
-            # Default to Ollama if it has installed models, else fall back to cloud
+            # Default to Claude Haiku if API key is set, else Ollama, else auto-detect
             default_model = ""
-            if model_catalog["ollama_installed"]:
+            if os.getenv("ANTHROPIC_API_KEY", ""):
+                default_provider = "claude"
+                default_model = "claude-haiku-4-5-20251001"
+                llm_provider = "claude"
+                llm_model = default_model
+                runner.update_config(provider=llm_provider, model=llm_model)
+                log.info("Default model: claude/%s", default_model)
+            elif model_catalog["ollama_installed"]:
                 default_provider = "ollama"
                 # Respect OLLAMA_MODEL env var, else prefer qwen3:8b, else first installed
                 installed_names = [m["name"] for m in model_catalog["ollama_installed"]]
@@ -392,14 +449,14 @@ async def handle_ws(request: web.Request) -> web.WebSocketResponse:
         elif msg_type == "mic_stop":
             if session:
                 log.info("Mic recording stopping, final STT...")
-                text = await session.stop_recording()
+                text, no_speech_prob, avg_logprob, audio_duration_s = await session.stop_recording()
                 await ws.send_json({"type": "transcription", "text": text, "partial": False})
                 log.info("Final transcription: %r", text[:80] if text else "")
 
                 # Agent mode: run in background so WS loop stays responsive
                 if agent_mode and text.strip():
                     _refresh_orchestrator_tools()
-                    asyncio.create_task(_do_agent_reply(text))
+                    asyncio.create_task(_do_agent_reply(text, no_speech_prob, avg_logprob, audio_duration_s))
             else:
                 await ws.send_json({"type": "error", "message": "No WebRTC session"})
 
@@ -470,7 +527,15 @@ if __name__ == "__main__":
     # Silence noisy internals
     logging.getLogger("aiortc").setLevel(logging.WARNING)
     logging.getLogger("aioice").setLevel(logging.WARNING)
+
+    # Suppress TURN 403 "Forbidden IP" task exceptions (non-fatal, ICE still succeeds)
+    class _TurnErrorFilter(logging.Filter):
+        def filter(self, record):
+            msg = record.getMessage()
+            return "TransactionFailed" not in msg and "Forbidden IP" not in msg
+
     logging.getLogger("asyncio").setLevel(logging.WARNING)
+    logging.getLogger("asyncio").addFilter(_TurnErrorFilter())
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("aiohttp.access").setLevel(logging.WARNING)
     log.info("Logging to %s", log_file)

@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 #
-# run.sh — Unified launcher with mode selection and health checks.
+# run.sh — Unified launcher with mode selection, health checks, and watchdog.
+#
+# Features:
+#   - caffeinate: prevents Mac sleep while running
+#   - Watchdog: checks health every 60s, auto-restarts on failure (option B: clean restart)
 #
 # Usage: bash scripts/run.sh
 #
@@ -17,16 +21,28 @@ mkdir -p "$LOG_DIR"
 # PIDs to clean up on exit
 SERVER_PID=""
 CF_PID=""
+TAIL_PID=""
+CAFFEINATE_PID=""
+
+SLEEP_DISABLED_BY_US=false
 
 cleanup() {
   echo ""
+  echo "Shutting down..."
+  [ -n "$TAIL_PID" ] && kill "$TAIL_PID" 2>/dev/null || true
   if [ -n "$CF_PID" ]; then
-    echo "Stopping cloudflared (PID $CF_PID)..."
+    echo "  Stopping cloudflared (PID $CF_PID)..."
     kill "$CF_PID" 2>/dev/null || true
   fi
   if [ -n "$SERVER_PID" ]; then
-    echo "Stopping server (PID $SERVER_PID)..."
+    echo "  Stopping server (PID $SERVER_PID)..."
     kill "$SERVER_PID" 2>/dev/null || true
+  fi
+  [ -n "$CAFFEINATE_PID" ] && kill "$CAFFEINATE_PID" 2>/dev/null || true
+  if pmset -g 2>/dev/null | grep -qi "sleepdisabled.*1"; then
+    echo ""
+    echo "  NOTE: lid-close sleep is still disabled."
+    echo "  Run 'sudo pmset disablesleep 0' to re-enable."
   fi
 }
 trap cleanup EXIT
@@ -70,6 +86,43 @@ PYTHON=$(find_python) || {
 }
 
 echo "  Using: $PYTHON ($($PYTHON --version 2>&1))"
+echo ""
+
+# ── Ollama pre-check ──────────────────────────────────────
+# Read model from .env or default
+OLLAMA_MODEL=$(grep '^OLLAMA_MODEL=' "$REPO_ROOT/.env" 2>/dev/null | cut -d= -f2 || echo "qwen3:8b")
+[ -z "$OLLAMA_MODEL" ] && OLLAMA_MODEL="qwen3:8b"
+
+echo "Checking Ollama ($OLLAMA_MODEL)..."
+if ! curl -sf http://localhost:11434/api/tags >/dev/null 2>&1; then
+  echo "  Ollama not running — starting it..."
+  open -a Ollama 2>/dev/null || ollama serve >/dev/null 2>&1 &
+  for i in $(seq 1 15); do
+    if curl -sf http://localhost:11434/api/tags >/dev/null 2>&1; then
+      break
+    fi
+    sleep 1
+  done
+  if ! curl -sf http://localhost:11434/api/tags >/dev/null 2>&1; then
+    echo "  WARNING: Ollama still not responding. LLM calls will fail."
+  else
+    echo "  Ollama started"
+  fi
+else
+  echo "  Ollama running"
+fi
+
+# Verify model is available
+if curl -sf http://localhost:11434/api/tags 2>/dev/null | grep -q "\"$OLLAMA_MODEL\""; then
+  echo "  Model $OLLAMA_MODEL: available"
+else
+  echo "  Model $OLLAMA_MODEL not found — pulling..."
+  ollama pull "$OLLAMA_MODEL" 2>&1 | tail -1
+fi
+
+# Warm the model into memory (first inference is slow otherwise)
+echo "  Warming model into memory..."
+curl -sf http://localhost:11434/api/generate -d "{\"model\":\"$OLLAMA_MODEL\",\"prompt\":\"hi\",\"stream\":false}" >/dev/null 2>&1 &
 echo ""
 
 # ── Mode selection ───────────────────────────────────────────
@@ -126,6 +179,58 @@ if [ "$MODE" = "1" ]; then
   CONNECT_URL="http://localhost:$PORT"
 fi
 
+# ── Prevent Mac sleep ─────────────────────────────────────
+caffeinate -s -w $$ &
+CAFFEINATE_PID=$!
+echo "  caffeinate enabled — Mac will stay awake (idle sleep)"
+
+# ── Prevent lid-close sleep (requires sudo) ──────────────
+# caffeinate prevents idle sleep but NOT lid-close sleep.
+# pmset disablesleep 1 keeps the Mac running even with the lid closed.
+if pmset -g 2>/dev/null | grep -qi "sleepdisabled.*1"; then
+  echo "  lid-close protection: already enabled"
+  echo ""
+else
+  echo ""
+  echo "  ┌─────────────────────────────────────────────────────┐"
+  echo "  │  Lid-close sleep is NOT disabled.                   │"
+  echo "  │  Closing the MacBook lid will kill the server.      │"
+  echo "  │                                                     │"
+  echo "  │  Run this in another terminal:                      │"
+  echo "  │                                                     │"
+  echo "  │    sudo pmset disablesleep 1                        │"
+  echo "  │                                                     │"
+  echo "  │  To undo later:  sudo pmset disablesleep 0          │"
+  echo "  └─────────────────────────────────────────────────────┘"
+  echo ""
+  read -rp "  Press ENTER once done (or to skip): "
+  echo ""
+  if pmset -g 2>/dev/null | grep -qi "sleepdisabled.*1"; then
+    echo "  lid-close sleep disabled"
+  else
+    echo "  WARNING: still not set — Mac may sleep if lid is closed"
+  fi
+  echo ""
+fi
+
+WATCHDOG_INTERVAL="${WATCHDOG_INTERVAL:-60}"
+RESTART_COUNT=0
+
+# ═══════════════════════════════════════════════════════════
+# Main service loop — tears down & restarts everything on failure
+# ═══════════════════════════════════════════════════════════
+while true; do
+
+if [ "$RESTART_COUNT" -gt 0 ]; then
+  echo ""
+  echo "[watchdog] ═══ Restart #$RESTART_COUNT ═══"
+  echo ""
+fi
+RESTART_COUNT=$((RESTART_COUNT + 1))
+SERVER_PID=""
+CF_PID=""
+TAIL_PID=""
+
 # ── Start server ─────────────────────────────────────────────
 if lsof -i :"$PORT" -sTCP:LISTEN >/dev/null 2>&1; then
   echo ""
@@ -135,10 +240,12 @@ else
   echo "  Starting server on port $PORT..."
   cd "$REPO_ROOT"
 
+  # Append logs (preserve crash evidence across restarts)
+  echo "--- server start $(date '+%Y-%m-%d %H:%M:%S') ---" >> "$LOG_FILE"
   if [ -n "$SERVE_ENV" ]; then
-    env $SERVE_ENV "$PYTHON" -m gateway.server > "$LOG_FILE" 2>&1 &
+    env $SERVE_ENV "$PYTHON" -m gateway.server >> "$LOG_FILE" 2>&1 &
   else
-    "$PYTHON" -m gateway.server > "$LOG_FILE" 2>&1 &
+    "$PYTHON" -m gateway.server >> "$LOG_FILE" 2>&1 &
   fi
   SERVER_PID=$!
   echo "  Server PID: $SERVER_PID"
@@ -155,7 +262,12 @@ else
   if ! lsof -i :"$PORT" -sTCP:LISTEN >/dev/null 2>&1; then
     echo "ERROR: Server failed to bind port $PORT after 5s."
     echo "  Check: $LOG_FILE"
-    exit 1
+    if [ "$RESTART_COUNT" -le 1 ]; then
+      exit 1  # First attempt — bail out
+    fi
+    echo "[watchdog] Will retry..."
+    sleep 3
+    continue  # Retry in the restart loop
   fi
 fi
 
@@ -182,7 +294,14 @@ if $HEALTH_OK; then
 else
   echo "  Health check FAILED — server may not be responding."
   echo "  Check: $LOG_FILE"
-  exit 1
+  if [ "$RESTART_COUNT" -le 1 ]; then
+    exit 1  # First attempt — bail out
+  fi
+  echo "[watchdog] Will retry..."
+  kill "$SERVER_PID" 2>/dev/null || true
+  SERVER_PID=""
+  sleep 3
+  continue  # Retry in the restart loop
 fi
 
 # ── Cellular: start tunnel ───────────────────────────────────
@@ -196,7 +315,8 @@ if [ "$MODE" = "3" ]; then
     echo ""
     echo "  Using named tunnel: $TUNNEL_NAME"
     echo "  Starting Cloudflare Tunnel..."
-    cloudflared tunnel --url "http://localhost:$PORT" run "$TUNNEL_NAME" > "$TUNNEL_LOG" 2>&1 &
+    echo "--- cloudflared start $(date '+%Y-%m-%d %H:%M:%S') ---" >> "$TUNNEL_LOG"
+    cloudflared tunnel --url "http://localhost:$PORT" run "$TUNNEL_NAME" >> "$TUNNEL_LOG" 2>&1 &
     CF_PID=$!
     echo "  cloudflared PID: $CF_PID"
     CONNECT_URL="$TUNNEL_URL"
@@ -302,10 +422,83 @@ if [ "$MODE" = "1" ]; then
 fi
 
 # ── Tail logs ────────────────────────────────────────────────
-echo "=== Server Log (Ctrl+C to stop) ==="
+echo "=== Watchdog active — health check every ${WATCHDOG_INTERVAL}s (Ctrl+C to stop) ==="
 echo ""
 if [ "$MODE" = "3" ] && [ -f "$TUNNEL_LOG" ]; then
-  tail -f "$LOG_FILE" "$TUNNEL_LOG"
+  tail -f "$LOG_FILE" "$TUNNEL_LOG" &
 else
-  tail -f "$LOG_FILE"
+  tail -f "$LOG_FILE" &
 fi
+TAIL_PID=$!
+
+# Determine health URL for watchdog
+if [ "$MODE" = "2" ]; then
+  WD_HEALTH_URL="https://localhost:$PORT/health"
+  WD_CURL_FLAGS="-sfk"
+else
+  WD_HEALTH_URL="http://localhost:$PORT/health"
+  WD_CURL_FLAGS="-sf"
+fi
+
+# ── Watchdog loop ────────────────────────────────────────
+while true; do
+  sleep "$WATCHDOG_INTERVAL"
+
+  HEALTHY=true
+  REASON=""
+
+  # Check: server process alive?
+  if [ -n "$SERVER_PID" ] && ! kill -0 "$SERVER_PID" 2>/dev/null; then
+    HEALTHY=false
+    REASON="server process (PID $SERVER_PID) died"
+  fi
+
+  # Check: cloudflared alive? (mode 3 only)
+  if [ "$MODE" = "3" ] && [ -n "$CF_PID" ] && ! kill -0 "$CF_PID" 2>/dev/null; then
+    HEALTHY=false
+    REASON="cloudflared process (PID $CF_PID) died"
+  fi
+
+  # Check: /health endpoint responds?
+  if $HEALTHY && ! curl $WD_CURL_FLAGS "$WD_HEALTH_URL" >/dev/null 2>&1; then
+    HEALTHY=false
+    REASON="health endpoint unresponsive ($WD_HEALTH_URL)"
+  fi
+
+  if ! $HEALTHY; then
+    echo ""
+    echo "[watchdog] $(date '+%Y-%m-%d %H:%M:%S') FAILURE: $REASON"
+    echo "[watchdog] Tearing down all services for clean restart..."
+
+    # Kill log tail
+    kill "$TAIL_PID" 2>/dev/null || true
+    TAIL_PID=""
+
+    # Kill cloudflared
+    if [ -n "$CF_PID" ]; then
+      kill "$CF_PID" 2>/dev/null || true
+      CF_PID=""
+    fi
+
+    # Kill server
+    if [ -n "$SERVER_PID" ]; then
+      kill "$SERVER_PID" 2>/dev/null || true
+      SERVER_PID=""
+    fi
+
+    # Wait for port to free
+    echo "[watchdog] Waiting for port $PORT to free..."
+    for i in $(seq 1 10); do
+      if ! lsof -i :"$PORT" -sTCP:LISTEN >/dev/null 2>&1; then
+        break
+      fi
+      sleep 1
+    done
+
+    echo "[watchdog] Restarting in 3s..."
+    sleep 3
+    break  # Break watchdog loop → outer loop restarts services
+  fi
+done
+
+done  # ═══ End main service loop ═══

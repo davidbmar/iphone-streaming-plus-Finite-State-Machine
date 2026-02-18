@@ -267,7 +267,7 @@ class Session:
             pcm_data = b"".join(self._mic_frames)
             log.debug("Partial transcription: %d frames, %d bytes", len(self._mic_frames), len(pcm_data))
 
-            text = await loop.run_in_executor(None, transcribe, pcm_data, SAMPLE_RATE)
+            text, _, _ = await loop.run_in_executor(None, transcribe, pcm_data, SAMPLE_RATE)
 
             if text and self._on_transcription and self._recording:
                 await self._on_transcription(text, True)
@@ -283,19 +283,20 @@ class Session:
 
         if not self._mic_frames:
             log.warning("No mic frames captured")
-            return ""
+            return "", 0.0, 0.0, 0.0
 
         # Final transcription of all audio
         pcm_data = b"".join(self._mic_frames)
         num_frames = len(self._mic_frames)
         self._mic_frames.clear()
 
-        log.info("Mic recording stopped: %d frames, %d bytes", num_frames, len(pcm_data))
+        audio_duration_s = len(pcm_data) / (SAMPLE_RATE * 2)  # 2 bytes per int16 sample
+        log.info("Mic recording stopped: %d frames, %d bytes, %.2fs", num_frames, len(pcm_data), audio_duration_s)
 
         from engine.stt import transcribe
         loop = asyncio.get_event_loop()
-        text = await loop.run_in_executor(None, transcribe, pcm_data, SAMPLE_RATE)
-        return text
+        text, no_speech_prob, avg_logprob = await loop.run_in_executor(None, transcribe, pcm_data, SAMPLE_RATE)
+        return text, no_speech_prob, avg_logprob, audio_duration_s
 
     async def close(self):
         """Tear down the peer connection."""

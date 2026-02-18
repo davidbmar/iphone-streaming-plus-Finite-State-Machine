@@ -27,7 +27,7 @@ def _get_model():
     return _model
 
 
-def transcribe(audio_bytes: bytes, sample_rate: int = 48000) -> str:
+def transcribe(audio_bytes: bytes, sample_rate: int = 48000):
     """Transcribe PCM int16 audio bytes to text.
 
     Args:
@@ -35,10 +35,12 @@ def transcribe(audio_bytes: bytes, sample_rate: int = 48000) -> str:
         sample_rate: Sample rate of the audio (default 48kHz from WebRTC).
 
     Returns:
-        Transcribed text string, or empty string if nothing detected.
+        Tuple of (text, no_speech_prob, avg_logprob).
+        no_speech_prob: 0.0-1.0 (high = likely not speech).
+        avg_logprob: negative float (closer to 0 = more confident).
     """
     if not audio_bytes:
-        return ""
+        return "", 0.0, 0.0
 
     model = _get_model()
 
@@ -57,11 +59,17 @@ def transcribe(audio_bytes: bytes, sample_rate: int = 48000) -> str:
 
     segments, info = model.transcribe(samples, beam_size=5, language="en")
 
-    # Collect all segment texts
+    # Collect all segment texts + confidence metrics
     text_parts = []
+    worst_no_speech = 0.0
+    avg_logprobs = []
     for segment in segments:
         text_parts.append(segment.text.strip())
+        worst_no_speech = max(worst_no_speech, segment.no_speech_prob)
+        avg_logprobs.append(segment.avg_logprob)
 
     result = " ".join(text_parts).strip()
-    log.info("Transcription: %r", result[:100])
-    return result
+    avg_logprob = sum(avg_logprobs) / len(avg_logprobs) if avg_logprobs else 0.0
+    log.info("Transcription: %r (no_speech=%.2f, avg_logprob=%.2f)",
+             result[:100], worst_no_speech, avg_logprob)
+    return result, worst_no_speech, avg_logprob

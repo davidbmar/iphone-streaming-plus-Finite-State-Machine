@@ -183,7 +183,7 @@ def test_stt_transcribe(pcm: bytes):
     try:
         from engine.stt import transcribe
 
-        text = transcribe(pcm, sample_rate=SAMPLE_RATE)
+        text, no_speech, logprob = transcribe(pcm, sample_rate=SAMPLE_RATE)
         report("transcribe returns string", isinstance(text, str))
         report("transcription is non-empty", len(text) > 0, repr(text[:80]))
 
@@ -197,8 +197,8 @@ def test_stt_empty():
     try:
         from engine.stt import transcribe
 
-        result = transcribe(b"", sample_rate=SAMPLE_RATE)
-        report("empty input returns empty string", result == "", repr(result))
+        text, _, _ = transcribe(b"", sample_rate=SAMPLE_RATE)
+        report("empty input returns empty string", text == "", repr(text))
 
     except Exception as e:
         report("STT empty input", False, str(e))
