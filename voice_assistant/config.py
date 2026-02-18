@@ -22,6 +22,9 @@ try:
         brave_api_key: str = ""
         tavily_api_key: str = ""
 
+        # RAG knowledge base
+        rag_url: str = "http://localhost:8100"
+
         # Orchestrator limits
         max_tool_calls_per_turn: int = 5
         max_history_messages: int = 20
@@ -46,6 +49,7 @@ except ImportError:
             self.serper_api_key = os.getenv("SERPER_API_KEY", "")
             self.brave_api_key = os.getenv("BRAVE_API_KEY", "")
             self.tavily_api_key = os.getenv("TAVILY_API_KEY", "")
+            self.rag_url = os.getenv("RAG_URL", "http://localhost:8100")
             self.max_tool_calls_per_turn = int(os.getenv("MAX_TOOL_CALLS_PER_TURN", "5"))
             self.max_history_messages = int(os.getenv("MAX_HISTORY_MESSAGES", "20"))
             self.enable_thinking = os.getenv("ENABLE_THINKING", "").lower() in ("1", "true")

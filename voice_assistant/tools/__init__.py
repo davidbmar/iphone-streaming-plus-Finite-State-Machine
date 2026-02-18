@@ -39,8 +39,10 @@ from .web_search import WebSearchTool
 from .calendar import CalendarTool
 from .notes import NotesTool
 from .datetime_tool import DateTimeTool
+from .rag import RAGTool
 
 register_tool(WebSearchTool)
 register_tool(CalendarTool)
 register_tool(NotesTool)
 register_tool(DateTimeTool)
+register_tool(RAGTool)

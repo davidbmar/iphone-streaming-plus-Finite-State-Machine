@@ -121,6 +121,9 @@ DEFAULT_TOOL_ALIASES: dict[str, str] = {
     "get_current_datetime": "get_current_datetime",
     "get_time": "get_current_datetime",
     "datetime": "get_current_datetime",
+    "search_knowledge_base": "search_knowledge_base",
+    "knowledge_base": "search_knowledge_base",
+    "rag_search": "search_knowledge_base",
 }
 
 def _default_system_prompt() -> str:
@@ -134,7 +137,11 @@ def _default_system_prompt() -> str:
         "If the user's message seems incomplete or unclear (e.g. cut off mid-sentence), "
         "briefly ask them to repeat it instead of guessing. "
         "When searching the web, always include the current year in queries "
-        "to get fresh results."
+        "to get fresh results. "
+        "You have access to a personal knowledge base containing the user's "
+        "GitHub repositories, code, and documentation. Use search_knowledge_base "
+        "for questions about the user's projects, repos, or code. "
+        "Use web_search for general knowledge, current events, weather, or prices."
     )
 
 DEFAULT_SYSTEM_PROMPT = _default_system_prompt()
