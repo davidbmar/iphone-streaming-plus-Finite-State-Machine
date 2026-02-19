@@ -1168,9 +1168,19 @@ async function ragHealthCheck(id, btn) {
         if (btn) {
             btn.textContent = result.healthy ? "Healthy" : "Unhealthy";
             btn.classList.toggle("btn-success", result.healthy);
+            btn.disabled = false;
         }
-        // Reload to update health dot
-        setTimeout(function () { loadRagEndpoints(); }, 1500);
+        // Update health dot inline instead of rebuilding the whole list
+        var card = btn ? btn.closest(".rag-card, [id^='rag-docs-']") : null;
+        if (!card) card = document.getElementById("rag-docs-" + id);
+        if (card) {
+            var dot = card.parentElement ? card.parentElement.querySelector(".health-dot") : null;
+            if (!dot) dot = card.querySelector(".health-dot");
+            if (dot) {
+                dot.className = "health-dot health-" + (result.healthy ? "green" : "red");
+                dot.title = result.healthy ? "Healthy (just now)" : "Unhealthy (just now)";
+            }
+        }
     } catch (e) {
         console.log("ragHealthCheck error:", e);
         if (btn) {
@@ -1266,11 +1276,19 @@ async function saveRagEndpoint() {
 function toggleRagDocs(ragId, card) {
     var panel = document.getElementById("rag-docs-" + ragId);
     if (!panel) return;
+    // Find the Documents button inside this card to update its label
+    var docsBtn = card.querySelector(".rag-docs-btn");
     if (panel.classList.contains("hidden")) {
         panel.classList.remove("hidden");
+        if (docsBtn) docsBtn.textContent = "Hide Documents";
         loadRagDocuments(ragId);
+        // Scroll the panel into view after a brief render delay
+        setTimeout(function () {
+            panel.scrollIntoView({ behavior: "smooth", block: "start" });
+        }, 100);
     } else {
         panel.classList.add("hidden");
+        if (docsBtn) docsBtn.textContent = "Documents";
     }
 }
 
