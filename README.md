@@ -250,18 +250,73 @@ scripts/
 | Audio transport | WebRTC with Opus | 48kHz, NAT traversal via TURN, works over cellular |
 | Mobile UX | Hold-to-talk walkie-talkie | Zero-delay touch events, works in Safari |
 
+## Google Sign-In (Optional)
+
+Google Sign-In enables per-user accounts, saved preferences, and conversation history tracking. Without it, the app falls back to the shared `AUTH_TOKEN` password.
+
+### Setup
+
+1. Go to [Google Cloud Console &rarr; Auth Platform](https://console.cloud.google.com/auth/overview)
+
+2. **Create branding** &mdash; fill in App name and support email, then click Next through each step:
+
+   ![Consent screen](docs/screenshots/gcloud-01-consent-screen.png)
+
+3. Go to **Clients** &rarr; **Create client**. Set **Application type** to **Web application** (not iOS):
+
+   ![Create client](docs/screenshots/gcloud-02-create-client.png)
+
+4. Add **Authorized JavaScript origins**:
+   - `http://localhost:8080` (local dev)
+   - `https://your-domain.com` (production, if applicable)
+
+5. Click Create. You'll see your clients listed with the Client ID:
+
+   ![Client list](docs/screenshots/gcloud-03-client-list.png)
+
+6. Copy the **Client ID** (starts with numbers, ends with `.apps.googleusercontent.com`) &mdash; not the Client Secret.
+
+7. Add to your `.env`:
+   ```
+   GOOGLE_CLIENT_ID=279178002549-xxxx.apps.googleusercontent.com
+   ```
+
+8. Restart the server. The login screen will now show a Google Sign-In button instead of the token input.
+
+### Optional: Email Allowlist
+
+Restrict access to specific Google accounts:
+```
+ALLOWED_EMAILS=alice@gmail.com,bob@company.com
+```
+Leave blank to allow any verified Google email.
+
+### What it enables
+
+- **User accounts** &mdash; name, email, avatar stored in SQLite
+- **Saved preferences** &mdash; voice, model, and search settings persist across sessions
+- **Session tokens** &mdash; 7-day browser sessions (no re-login on refresh)
+- **Usage tracking** &mdash; conversation turns linked to user accounts
+
+---
+
 ## Environment Variables
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `PORT` | `8080` | Server listen port |
-| `AUTH_TOKEN` | `devtoken` | WebSocket auth token |
+| `AUTH_TOKEN` | `devtoken` | WebSocket auth token (legacy/dev mode) |
 | `LLM_PROVIDER` | (auto) | `claude`, `openai`, or `ollama` |
 | `ANTHROPIC_API_KEY` | &mdash; | Enables Claude |
 | `OPENAI_API_KEY` | &mdash; | Enables OpenAI |
-| `OLLAMA_MODEL` | `llama3.2:3b` | Default Ollama model |
+| `OLLAMA_MODEL` | `qwen3:4b` | Default Ollama model |
 | `TWILIO_ACCOUNT_SID` | &mdash; | For TURN credentials |
 | `TWILIO_AUTH_TOKEN` | &mdash; | For TURN credentials |
+| `GOOGLE_CLIENT_ID` | &mdash; | Google OAuth Client ID (enables Google Sign-In) |
+| `ALLOWED_EMAILS` | &mdash; | Comma-separated email allowlist (empty = allow all) |
+| `TAVILY_API_KEY` | &mdash; | Web search provider (1K/month free) |
+| `BRAVE_API_KEY` | &mdash; | Web search fallback (~1K/month free) |
+| `SERPER_API_KEY` | &mdash; | Web search fallback (2.5K free) |
 
 ## Where We Are (Current State)
 

@@ -7,7 +7,8 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@400;500;600;700&family=Raleway:wght@300;400;500;600&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="/static/styles.css?v=31">
+    <link rel="stylesheet" href="/static/styles.css?v=32">
+    <script src="https://accounts.google.com/gsi/client" async defer></script>
 </head>
 <body>
 <div id="app-layout">
@@ -42,9 +43,45 @@
             <div class="deco-frame">
                 <h1>Voice Agent</h1>
                 <div class="deco-divider"></div>
-                <label for="token-input">Authorization</label>
-                <input type="password" id="token-input" placeholder="Enter token">
-                <button class="btn-primary" id="connect-btn">Establish Link</button>
+
+                <!-- Auth section 1: Google Sign-In -->
+                <div id="auth-google" class="auth-section">
+                    <div id="g_id_onload"
+                         data-client_id="__GOOGLE_CLIENT_ID_PLACEHOLDER__"
+                         data-callback="handleGoogleSignIn"
+                         data-auto_prompt="false">
+                    </div>
+                    <div class="g_id_signin"
+                         data-type="standard"
+                         data-shape="rectangular"
+                         data-theme="filled_black"
+                         data-text="signin_with"
+                         data-size="large"
+                         data-logo_alignment="left"
+                         data-width="300">
+                    </div>
+                </div>
+
+                <!-- Auth section 2: Signed-in user card + connect -->
+                <div id="auth-user" class="auth-section hidden">
+                    <div class="user-info">
+                        <img id="user-avatar" class="user-avatar" src="" alt="">
+                        <div class="user-details">
+                            <div id="user-name" class="user-name"></div>
+                            <div id="user-email" class="user-email"></div>
+                        </div>
+                    </div>
+                    <button class="btn-primary" id="connect-btn">Establish Link</button>
+                    <a href="#" id="signout-link" class="btn-text">Sign Out</a>
+                </div>
+
+                <!-- Auth section 3: Legacy token input (hidden when Google available) -->
+                <div id="auth-legacy" class="auth-section hidden">
+                    <label for="token-input">Authorization</label>
+                    <input type="password" id="token-input" placeholder="Enter token">
+                    <button class="btn-primary" id="connect-btn-legacy">Establish Link</button>
+                </div>
+
                 <p class="connect-status" id="connect-status"></p>
                 <div id="connect-progress" class="connect-progress hidden">
                     <div class="cp-segments">
@@ -64,6 +101,10 @@
     <div id="agent-screen" class="hidden">
         <div id="top-bar">
             <div class="top-bar-inner">
+                <div id="user-badge" class="user-badge hidden">
+                    <img id="topbar-avatar" class="topbar-avatar" src="" alt="">
+                    <span id="topbar-name"></span>
+                </div>
                 <div class="deco-line-h"></div>
                 <select id="provider-select"></select>
                 <select id="voice-select"></select>
@@ -92,9 +133,10 @@
 <!-- Config injected by server -->
 <script>
     window.__CONFIG__ = __ICE_SERVERS_PLACEHOLDER__;
+    window.__GOOGLE_CLIENT_ID__ = "__GOOGLE_CLIENT_ID_PLACEHOLDER__";
 </script>
 <script src="/static/workflow-map.js?v=2"></script>
 <script src="/static/workflow-code.js?v=2"></script>
-<script src="/static/app.js?v=31"></script>
+<script src="/static/app.js?v=32"></script>
 </body>
 </html>

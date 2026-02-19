@@ -5,7 +5,18 @@ const connectScreen = document.getElementById("connect-screen");
 const agentScreen = document.getElementById("agent-screen");
 const tokenInput = document.getElementById("token-input");
 const connectBtn = document.getElementById("connect-btn");
+const connectBtnLegacy = document.getElementById("connect-btn-legacy");
 const connectStatus = document.getElementById("connect-status");
+const authGoogle = document.getElementById("auth-google");
+const authUser = document.getElementById("auth-user");
+const authLegacy = document.getElementById("auth-legacy");
+const userAvatar = document.getElementById("user-avatar");
+const userName = document.getElementById("user-name");
+const userEmail = document.getElementById("user-email");
+const signoutLink = document.getElementById("signout-link");
+const userBadge = document.getElementById("user-badge");
+const topbarAvatar = document.getElementById("topbar-avatar");
+const topbarName = document.getElementById("topbar-name");
 const conversationLog = document.getElementById("conversation-log");
 const talkBtn = document.getElementById("talk-btn");
 const stopBtn = document.getElementById("stop-btn");
@@ -25,6 +36,9 @@ const connectProgressLabel = document.getElementById("connect-progress-label");
 
 // --- State ---
 let iceServers = window.__CONFIG__ || [];
+let currentUser = null;       // {email, name, avatar_url} from server
+let sessionToken = null;      // Opaque session token from server
+let googleJwt = null;         // Google JWT (transient, for hello only)
 let ws = null;
 let pc = null;
 let audioEl = null;
@@ -299,6 +313,71 @@ function populateVoiceSelect(voices, defaultVoice) {
     currentVoice = voiceSelect.value;
 }
 
+// --- Google Sign-In + Auth UI ---
+
+// GIS callback — must be global
+window.handleGoogleSignIn = function(response) {
+    googleJwt = response.credential;
+    // Decode JWT payload for preview (no verification — server does that)
+    try {
+        var parts = googleJwt.split(".");
+        var payload = JSON.parse(atob(parts[1].replace(/-/g, "+").replace(/_/g, "/")));
+        showPreConnectUser({
+            name: payload.name || "",
+            email: payload.email || "",
+            avatar_url: payload.picture || "",
+        });
+    } catch (e) {
+        console.error("JWT decode failed:", e);
+        showPreConnectUser({ name: "Google User", email: "", avatar_url: "" });
+    }
+};
+
+function showPreConnectUser(info) {
+    authGoogle.classList.add("hidden");
+    authLegacy.classList.add("hidden");
+    authUser.classList.remove("hidden");
+    if (info.avatar_url) {
+        userAvatar.src = info.avatar_url;
+        userAvatar.classList.remove("hidden");
+    } else {
+        userAvatar.classList.add("hidden");
+    }
+    userName.textContent = info.name || "";
+    userEmail.textContent = info.email || "";
+    connectBtn.disabled = false;
+}
+
+function showGoogleSignIn() {
+    googleJwt = null;
+    sessionToken = null;
+    currentUser = null;
+    localStorage.removeItem("session_token");
+    localStorage.removeItem("user_info");
+    authUser.classList.add("hidden");
+    authLegacy.classList.add("hidden");
+    authGoogle.classList.remove("hidden");
+    userBadge.classList.add("hidden");
+}
+
+function showLegacyAuth() {
+    authGoogle.classList.add("hidden");
+    authUser.classList.add("hidden");
+    authLegacy.classList.remove("hidden");
+}
+
+function showTopBarUser(user) {
+    if (!user || !userBadge) return;
+    if (user.avatar_url) {
+        topbarAvatar.src = user.avatar_url;
+        topbarAvatar.classList.remove("hidden");
+    } else {
+        topbarAvatar.classList.add("hidden");
+    }
+    topbarName.textContent = user.name || user.email || "";
+    userBadge.classList.remove("hidden");
+}
+
 // --- WebSocket ---
 function sendMsg(type, payload = {}) {
     if (!ws || ws.readyState !== WebSocket.OPEN) {
@@ -310,10 +389,25 @@ function sendMsg(type, payload = {}) {
 }
 
 function connect() {
-    const token = tokenInput.value.trim();
-    if (!token) { setStatus("Enter a token", true); return; }
+    // Build auth payload based on current auth state
+    var helloPayload = {
+        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+        local_time: new Date().toISOString(),
+    };
+
+    if (googleJwt) {
+        helloPayload.google_jwt = googleJwt;
+    } else if (sessionToken) {
+        helloPayload.session_token = sessionToken;
+    } else {
+        // Legacy token auth
+        var token = tokenInput ? tokenInput.value.trim() : "";
+        if (!token) { setStatus("Enter a token", true); return; }
+        helloPayload.token = token;
+    }
 
     connectBtn.disabled = true;
+    if (connectBtnLegacy) connectBtnLegacy.disabled = true;
     setStatus("Connecting...");
     setConnectProgress(1);
 
@@ -323,11 +417,7 @@ function connect() {
     ws.onopen = () => {
         setStatus("Authenticating...");
         setConnectProgress(2);
-        sendMsg("hello", {
-            token,
-            timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-            local_time: new Date().toISOString(),
-        });
+        sendMsg("hello", helloPayload);
     };
 
     ws.onmessage = (ev) => {
@@ -345,6 +435,7 @@ function connect() {
     ws.onerror = () => {
         setStatus("Connection failed", true);
         connectBtn.disabled = false;
+        if (connectBtnLegacy) connectBtnLegacy.disabled = false;
         hideConnectProgress();
     };
 
@@ -356,6 +447,7 @@ function connect() {
         }
         setStatus("Disconnected", true);
         connectBtn.disabled = false;
+        if (connectBtnLegacy) connectBtnLegacy.disabled = false;
         hideConnectProgress();
         cleanupWebRTC();
     };
@@ -393,6 +485,17 @@ function hideConnectProgress() {
 function handleMessage(msg) {
     switch (msg.type) {
         case "hello_ack":
+            // Store session token + user info
+            if (msg.session_token) {
+                sessionToken = msg.session_token;
+                localStorage.setItem("session_token", sessionToken);
+            }
+            if (msg.user) {
+                currentUser = msg.user;
+                localStorage.setItem("user_info", JSON.stringify(currentUser));
+                showTopBarUser(currentUser);
+            }
+            googleJwt = null; // JWT consumed, use session token going forward
             if (msg.ice_servers && msg.ice_servers.length > 0) {
                 iceServers = msg.ice_servers;
             }
@@ -611,6 +714,18 @@ function handleMessage(msg) {
         case "search_enabled_set":
             searchEnabled = msg.enabled;
             searchToggle.classList.toggle("active", searchEnabled);
+            break;
+
+        case "auth_expired":
+            showGoogleSignIn();
+            setStatus("Session expired — please sign in again", true);
+            break;
+
+        case "logged_out":
+            showGoogleSignIn();
+            break;
+
+        case "preferences_saved":
             break;
 
         case "error":
@@ -985,6 +1100,7 @@ setInterval(() => { sendMsg("ping"); }, 15000);
 
 // --- Event listeners ---
 connectBtn.addEventListener("click", connect);
+if (connectBtnLegacy) connectBtnLegacy.addEventListener("click", connect);
 stopBtn.addEventListener("click", stopSpeaking);
 
 searchToggle.addEventListener("click", () => {
@@ -1017,6 +1133,7 @@ providerSelect.addEventListener("change", () => {
         // Switch model
         currentSelectValue = value;
         sendMsg("set_model", { provider: provider, model: model });
+        maybeSavePreferences();
     }
 });
 
@@ -1025,12 +1142,38 @@ voiceSelect.addEventListener("change", () => {
     if (voiceId && voiceId !== currentVoice) {
         currentVoice = voiceId;
         sendMsg("set_voice", { voice_id: voiceId });
+        maybeSavePreferences();
     }
 });
 
-tokenInput.addEventListener("keydown", (e) => {
-    if (e.key === "Enter") connect();
-});
+if (tokenInput) {
+    tokenInput.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") connect();
+    });
+}
+
+// --- Sign Out handler ---
+if (signoutLink) {
+    signoutLink.addEventListener("click", (e) => {
+        e.preventDefault();
+        // Tell server to invalidate session
+        if (ws && ws.readyState === WebSocket.OPEN) {
+            sendMsg("logout");
+        }
+        // Disable Google auto-select prompt
+        if (window.google && google.accounts && google.accounts.id) {
+            google.accounts.id.disableAutoSelect();
+        }
+        showGoogleSignIn();
+    });
+}
+
+// --- Preference auto-save (after voice/model change) ---
+function maybeSavePreferences() {
+    if (currentUser && ws && ws.readyState === WebSocket.OPEN) {
+        sendMsg("save_preferences");
+    }
+}
 
 // Hold-to-talk: touch events (mobile)
 talkBtn.addEventListener("touchstart", (e) => {
@@ -1058,3 +1201,30 @@ talkBtn.addEventListener("mouseup", () => { stopTalking(); });
 talkBtn.addEventListener("mouseleave", () => {
     if (isRecording) stopTalking();
 });
+
+// --- Startup: check stored session or detect auth mode ---
+(function checkStoredSession() {
+    var hasClientId = window.__GOOGLE_CLIENT_ID__ && window.__GOOGLE_CLIENT_ID__ !== "";
+
+    if (!hasClientId) {
+        // No Google Client ID configured — show legacy token input
+        showLegacyAuth();
+        return;
+    }
+
+    // Check localStorage for stored session
+    var storedToken = localStorage.getItem("session_token");
+    var storedUser = localStorage.getItem("user_info");
+
+    if (storedToken && storedUser) {
+        try {
+            var info = JSON.parse(storedUser);
+            sessionToken = storedToken;
+            currentUser = info;
+            showPreConnectUser(info);
+        } catch (e) {
+            showGoogleSignIn();
+        }
+    }
+    // If no stored session, auth-google is already visible (default)
+})();

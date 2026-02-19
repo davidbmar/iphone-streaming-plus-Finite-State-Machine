@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import os
+import sys
 import time
 from pathlib import Path
 
@@ -31,7 +32,12 @@ from voice_assistant.tool_router import dispatch_tool_call
 from engine.fast_path import try_fast_path
 from engine.input_filter import classify as classify_input, InputQuality
 from gateway.turn import fetch_twilio_turn_credentials
-from gateway.db import init_db, create_session, add_turn, end_session as db_end_session
+from gateway.db import (
+    init_db, create_session, add_turn, end_session as db_end_session,
+    get_user_preferences, update_user_preferences, delete_auth_session,
+    cleanup_expired_sessions,
+)
+from gateway.auth import authenticate_google, authenticate_session_token
 
 log = logging.getLogger("gateway")
 
@@ -46,10 +52,15 @@ _START_TIME = None  # Set on app creation
 LOOKUP_PHRASE = "Let me look that up."
 
 
+GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "")
+
+
 def build_index_html() -> str:
-    """Read index.html and inject ICE servers config."""
+    """Read index.html and inject ICE servers config + Google Client ID."""
     raw = (WEB_DIR / "index.html").read_text()
-    return raw.replace("__ICE_SERVERS_PLACEHOLDER__", ICE_SERVERS_JSON)
+    raw = raw.replace("__ICE_SERVERS_PLACEHOLDER__", ICE_SERVERS_JSON)
+    raw = raw.replace("__GOOGLE_CLIENT_ID_PLACEHOLDER__", GOOGLE_CLIENT_ID)
+    return raw
 
 
 # ── HTTP routes ───────────────────────────────────────────────
@@ -267,11 +278,55 @@ async def handle_ws(request: web.Request) -> web.WebSocketResponse:
             log.info("WS recv: %s", msg_type)
 
         if msg_type == "hello":
-            token = msg.get("token", "")
-            if token != AUTH_TOKEN:
-                await ws.send_json({"type": "error", "message": "Bad token"})
+            # ── Authentication (3 methods, priority order) ──
+            auth_user_id = None
+            auth_user_info = None
+            auth_session_token = None
+
+            google_jwt = msg.get("google_jwt", "")
+            session_tok = msg.get("session_token", "")
+            legacy_token = msg.get("token", "")
+
+            if google_jwt:
+                try:
+                    auth_user_id, auth_session_token, auth_user_info = authenticate_google(google_jwt)
+                except Exception as e:
+                    log.warning("Google auth failed: %s", e)
+                    await ws.send_json({"type": "error", "message": f"Google auth failed: {e}"})
+                    await ws.close()
+                    break
+            elif session_tok:
+                result = authenticate_session_token(session_tok)
+                if result:
+                    auth_user_id, auth_user_info = result
+                    auth_session_token = session_tok  # reuse valid token
+                else:
+                    await ws.send_json({"type": "auth_expired"})
+                    await ws.close()
+                    break
+            elif legacy_token:
+                if legacy_token != AUTH_TOKEN:
+                    await ws.send_json({"type": "error", "message": "Bad token"})
+                    await ws.close()
+                    break
+            else:
+                await ws.send_json({"type": "error", "message": "No credentials provided"})
                 await ws.close()
                 break
+
+            # ── Load user preferences if authenticated ──
+            if auth_user_id:
+                prefs = get_user_preferences(auth_user_id)
+                if prefs:
+                    if prefs.get("voice"):
+                        tts_voice = prefs["voice"]
+                    if prefs.get("llm_provider"):
+                        llm_provider = prefs["llm_provider"]
+                    if prefs.get("llm_model"):
+                        llm_model = prefs["llm_model"]
+                    if prefs.get("search_enabled") is not None:
+                        search_enabled = bool(prefs["search_enabled"])
+
             # Inject client timezone into system prompt for time awareness
             client_tz = msg.get("timezone", "")
             if client_tz:
@@ -303,8 +358,10 @@ async def handle_ws(request: web.Request) -> web.WebSocketResponse:
             if os.getenv("ANTHROPIC_API_KEY", ""):
                 default_provider = "claude"
                 default_model = "claude-haiku-4-5-20251001"
-                llm_provider = "claude"
-                llm_model = default_model
+                if not llm_provider:
+                    llm_provider = "claude"
+                if not llm_model:
+                    llm_model = default_model
                 runner.update_config(provider=llm_provider, model=llm_model)
                 log.info("Default model: claude/%s", default_model)
             elif model_catalog["ollama_installed"]:
@@ -318,14 +375,16 @@ async def handle_ws(request: web.Request) -> web.WebSocketResponse:
                     default_model = "qwen3:8b"
                 else:
                     default_model = installed_names[0]
-                llm_provider = "ollama"
-                llm_model = default_model
+                if not llm_provider:
+                    llm_provider = "ollama"
+                if not llm_model:
+                    llm_model = default_model
                 runner.update_config(provider=llm_provider, model=llm_model)
                 log.info("Default model: ollama/%s", default_model)
             else:
                 default_provider = get_provider_name()
             search_quota = await get_quota_status()
-            await ws.send_json({
+            ack = {
                 "type": "hello_ack",
                 "voices": tts_voices,
                 "tts_voices": tts_voices,
@@ -334,17 +393,23 @@ async def handle_ws(request: web.Request) -> web.WebSocketResponse:
                 "llm_providers": available_providers(),
                 "llm_default": default_provider,
                 "model_catalog": model_catalog,
-                "llm_default_provider": default_provider,
-                "llm_default_model": default_model,
+                "llm_default_provider": llm_provider or default_provider,
+                "llm_default_model": llm_model or default_model,
                 "search_enabled": search_enabled,
                 "search_quota": search_quota,
-            })
+            }
+            if auth_user_info:
+                ack["user"] = auth_user_info
+            if auth_session_token:
+                ack["session_token"] = auth_session_token
+            await ws.send_json(ack)
             db_session_id = create_session(
                 client_ip=request.remote or "",
                 client_timezone=client_tz,
                 llm_provider=llm_provider,
                 llm_model=llm_model,
                 voice=tts_voice,
+                user_id=auth_user_id,
             )
 
         elif msg_type == "webrtc_offer":
@@ -505,6 +570,29 @@ async def handle_ws(request: web.Request) -> web.WebSocketResponse:
             log.info("Web search %s by user", "enabled" if search_enabled else "disabled")
             await ws.send_json({"type": "search_enabled_set", "enabled": search_enabled})
 
+        elif msg_type == "save_preferences":
+            if auth_user_id:
+                update_user_preferences(
+                    auth_user_id,
+                    voice=tts_voice,
+                    llm_provider=llm_provider,
+                    llm_model=llm_model,
+                    search_enabled=1 if search_enabled else 0,
+                )
+                log.info("Saved preferences for user %s", auth_user_id)
+                await ws.send_json({"type": "preferences_saved"})
+            else:
+                await ws.send_json({"type": "error", "message": "Not authenticated"})
+
+        elif msg_type == "logout":
+            if auth_session_token:
+                delete_auth_session(auth_session_token)
+                auth_user_id = None
+                auth_user_info = None
+                auth_session_token = None
+                log.info("User logged out")
+            await ws.send_json({"type": "logged_out"})
+
         elif msg_type == "ping":
             await ws.send_json({"type": "pong"})
 
@@ -522,6 +610,18 @@ async def handle_ws(request: web.Request) -> web.WebSocketResponse:
 
 # ── App setup ─────────────────────────────────────────────────
 
+async def handle_auth_logout(request: web.Request) -> web.Response:
+    """REST endpoint for logout — alternative to WS logout message."""
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+    token = body.get("session_token", "")
+    if token:
+        delete_auth_session(token)
+    return web.json_response({"status": "logged_out"})
+
+
 def create_app() -> web.Application:
     global INDEX_TEMPLATE, _START_TIME
     INDEX_TEMPLATE = build_index_html()
@@ -531,9 +631,13 @@ def create_app() -> web.Application:
     app.router.add_get("/", handle_index)
     app.router.add_get("/health", handle_health)
     app.router.add_get("/api/quota", handle_quota)
+    app.router.add_post("/api/auth/logout", handle_auth_logout)
     app.router.add_get("/ws", handle_ws)
     app.router.add_static("/static", WEB_DIR, show_index=False)
     init_db()
+    expired = cleanup_expired_sessions()
+    if expired:
+        log.info("Cleaned up %d expired auth sessions", expired)
     from gateway.admin import register_admin_routes
     register_admin_routes(app)
     return app
@@ -548,15 +652,21 @@ if __name__ == "__main__":
 
     fmt = logging.Formatter("%(asctime)s %(name)-12s %(levelname)-8s %(message)s")
 
-    console = logging.StreamHandler()
-    console.setLevel(logging.INFO)
-    console.setFormatter(fmt)
-
     filelog = logging.FileHandler(log_file)
     filelog.setLevel(logging.INFO)
     filelog.setFormatter(fmt)
 
-    logging.basicConfig(level=logging.INFO, handlers=[console, filelog])
+    handlers = [filelog]
+    # Only add console handler when stdout is a real terminal.
+    # run.sh already redirects stdout to server.log, so adding a
+    # StreamHandler too would duplicate every line in the file.
+    if sys.stdout.isatty():
+        console = logging.StreamHandler()
+        console.setLevel(logging.INFO)
+        console.setFormatter(fmt)
+        handlers.append(console)
+
+    logging.basicConfig(level=logging.INFO, handlers=handlers)
 
     # Silence noisy internals
     logging.getLogger("aiortc").setLevel(logging.WARNING)
