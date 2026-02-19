@@ -27,6 +27,12 @@ def get_all_schemas() -> list[dict]:
     return [tool.to_openai_schema() for tool in TOOL_REGISTRY.values()]
 
 
+def get_filtered_schemas(disabled_tools: list[str] | None = None) -> list[dict]:
+    """Return tool schemas excluding disabled tools."""
+    disabled = set(disabled_tools or [])
+    return [tool.to_openai_schema() for name, tool in TOOL_REGISTRY.items() if name not in disabled]
+
+
 def get_tool(name: str):
     """Look up a registered tool by name. Returns None if not found."""
     return TOOL_REGISTRY.get(name)

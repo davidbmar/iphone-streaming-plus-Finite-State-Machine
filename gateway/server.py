@@ -26,7 +26,7 @@ from engine.search import (
 )
 from engine.orchestrator import OrchestratorConfig
 from engine.workflow import WorkflowRunner, get_workflow_def_for_client
-from voice_assistant.tools import get_all_schemas
+from voice_assistant.tools import get_all_schemas, get_filtered_schemas
 from voice_assistant.tool_router import dispatch_tool_call
 from engine.fast_path import try_fast_path
 from engine.input_filter import classify as classify_input, InputQuality
@@ -184,9 +184,20 @@ async def handle_ws(request: web.Request) -> web.WebSocketResponse:
     runner.on_debug = _on_debug
 
     def _refresh_orchestrator_tools():
-        """Update runner tools based on current search toggle."""
-        if search_enabled and search_is_configured():
-            runner.update_config(tools=all_tool_schemas)
+        """Update runner tools based on current search toggle AND admin config."""
+        import json as _json
+        from gateway.db import get_config
+
+        # Admin-level disabled tools
+        disabled = _json.loads(get_config("disabled_tools_json", "[]"))
+
+        # Admin-level web search master toggle
+        admin_search = get_config("web_search_enabled", "true") == "true"
+        if not admin_search or not search_enabled:
+            disabled.append("web_search")
+
+        if search_is_configured():
+            runner.update_config(tools=get_filtered_schemas(disabled))
         else:
             runner.update_config(tools=[])
 
