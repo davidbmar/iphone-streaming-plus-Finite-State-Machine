@@ -1127,6 +1127,15 @@ function renderRagEndpoints(endpoints) {
         }
 
         actionsDiv.appendChild(document.createTextNode(" "));
+        var docsBtn = document.createElement("button");
+        docsBtn.className = "btn-sm btn-secondary rag-docs-btn";
+        docsBtn.textContent = "Documents";
+        docsBtn.addEventListener("click", function () {
+            toggleRagDocs(ep.id, card);
+        });
+        actionsDiv.appendChild(docsBtn);
+
+        actionsDiv.appendChild(document.createTextNode(" "));
         var deleteBtn = document.createElement("button");
         deleteBtn.className = "btn-sm btn-danger rag-delete-btn";
         deleteBtn.textContent = "Delete";
@@ -1136,6 +1145,13 @@ function renderRagEndpoints(endpoints) {
         actionsDiv.appendChild(deleteBtn);
 
         card.appendChild(actionsDiv);
+
+        // Documents panel (hidden by default)
+        var docsPanel = document.createElement("div");
+        docsPanel.className = "rag-docs-panel hidden";
+        docsPanel.id = "rag-docs-" + ep.id;
+        card.appendChild(docsPanel);
+
         ragList.appendChild(card);
     });
 }
@@ -1240,6 +1256,282 @@ async function saveRagEndpoint() {
     } catch (e) {
         console.log("saveRagEndpoint error:", e);
         alert("Failed to save RAG endpoint: " + e.message);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 7b. RAG Document Browser — inline doc list, upload, query, delete
+// ---------------------------------------------------------------------------
+
+function toggleRagDocs(ragId, card) {
+    var panel = document.getElementById("rag-docs-" + ragId);
+    if (!panel) return;
+    if (panel.classList.contains("hidden")) {
+        panel.classList.remove("hidden");
+        loadRagDocuments(ragId);
+    } else {
+        panel.classList.add("hidden");
+    }
+}
+
+function formatBytes(bytes) {
+    if (!bytes || bytes === 0) return "--";
+    if (bytes < 1024) return bytes + " B";
+    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + " KB";
+    return (bytes / (1024 * 1024)).toFixed(1) + " MB";
+}
+
+async function loadRagDocuments(ragId) {
+    var panel = document.getElementById("rag-docs-" + ragId);
+    if (!panel) return;
+
+    panel.textContent = "";
+
+    // Upload bar
+    var uploadBar = document.createElement("div");
+    uploadBar.className = "rag-upload-bar";
+
+    var fileInput = document.createElement("input");
+    fileInput.type = "file";
+    fileInput.multiple = true;
+    fileInput.className = "rag-file-input";
+    fileInput.id = "rag-file-" + ragId;
+    uploadBar.appendChild(fileInput);
+
+    var uploadBtn = document.createElement("button");
+    uploadBtn.className = "btn-sm btn-secondary";
+    uploadBtn.textContent = "Upload";
+    uploadBtn.addEventListener("click", function () {
+        uploadRagFiles(ragId);
+    });
+    uploadBar.appendChild(uploadBtn);
+
+    // Query bar
+    var queryInput = document.createElement("input");
+    queryInput.type = "text";
+    queryInput.placeholder = "Test query...";
+    queryInput.className = "rag-query-input";
+    queryInput.id = "rag-query-" + ragId;
+    uploadBar.appendChild(queryInput);
+
+    var queryBtn = document.createElement("button");
+    queryBtn.className = "btn-sm btn-secondary";
+    queryBtn.textContent = "Search";
+    queryBtn.addEventListener("click", function () {
+        queryRagEndpoint(ragId);
+    });
+    uploadBar.appendChild(queryBtn);
+
+    panel.appendChild(uploadBar);
+
+    // Query results container
+    var queryResults = document.createElement("div");
+    queryResults.className = "rag-query-results hidden";
+    queryResults.id = "rag-query-results-" + ragId;
+    panel.appendChild(queryResults);
+
+    // Documents list
+    var docsContainer = document.createElement("div");
+    docsContainer.id = "rag-doclist-" + ragId;
+    docsContainer.className = "rag-doclist";
+
+    var loading = document.createElement("p");
+    loading.className = "text-muted";
+    loading.textContent = "Loading documents...";
+    docsContainer.appendChild(loading);
+    panel.appendChild(docsContainer);
+
+    try {
+        var data = await apiFetch("/api/admin/rag/" + ragId + "/documents");
+        renderRagDocList(ragId, data.documents || []);
+    } catch (e) {
+        docsContainer.textContent = "";
+        var err = document.createElement("p");
+        err.className = "error-msg";
+        err.textContent = "Failed to load documents: " + e.message;
+        docsContainer.appendChild(err);
+    }
+}
+
+function renderRagDocList(ragId, docs) {
+    var container = document.getElementById("rag-doclist-" + ragId);
+    if (!container) return;
+    container.textContent = "";
+
+    if (docs.length === 0) {
+        var empty = document.createElement("p");
+        empty.className = "text-muted";
+        empty.textContent = "No documents indexed.";
+        container.appendChild(empty);
+        return;
+    }
+
+    // Summary
+    var summary = document.createElement("div");
+    summary.className = "rag-doc-summary";
+    var totalChunks = docs.reduce(function (sum, d) { return sum + (d.chunks || 0); }, 0);
+    summary.textContent = docs.length + " documents, " + totalChunks + " chunks";
+    container.appendChild(summary);
+
+    // Table
+    var table = document.createElement("table");
+    table.className = "rag-doc-table";
+
+    var thead = document.createElement("thead");
+    var headRow = document.createElement("tr");
+    ["Filename", "Chunks", "Size", "Indexed", ""].forEach(function (label) {
+        var th = document.createElement("th");
+        th.textContent = label;
+        headRow.appendChild(th);
+    });
+    thead.appendChild(headRow);
+    table.appendChild(thead);
+
+    var tbody = document.createElement("tbody");
+    docs.forEach(function (doc) {
+        var tr = document.createElement("tr");
+
+        var tdName = document.createElement("td");
+        tdName.className = "rag-doc-filename";
+        tdName.textContent = doc.filename;
+        tdName.title = doc.filename;
+        tr.appendChild(tdName);
+
+        var tdChunks = document.createElement("td");
+        tdChunks.textContent = doc.chunks;
+        tr.appendChild(tdChunks);
+
+        var tdSize = document.createElement("td");
+        tdSize.textContent = formatBytes(doc.file_size_bytes);
+        tr.appendChild(tdSize);
+
+        var tdDate = document.createElement("td");
+        tdDate.textContent = doc.indexed_at ? formatTime(doc.indexed_at) : "--";
+        tr.appendChild(tdDate);
+
+        var tdActions = document.createElement("td");
+        var delBtn = document.createElement("button");
+        delBtn.className = "btn-xs btn-danger";
+        delBtn.textContent = "Del";
+        delBtn.addEventListener("click", function () {
+            deleteRagDocument(ragId, doc.id, doc.filename);
+        });
+        tdActions.appendChild(delBtn);
+        tr.appendChild(tdActions);
+
+        tbody.appendChild(tr);
+    });
+    table.appendChild(tbody);
+    container.appendChild(table);
+}
+
+async function uploadRagFiles(ragId) {
+    var fileInput = document.getElementById("rag-file-" + ragId);
+    if (!fileInput || !fileInput.files || fileInput.files.length === 0) {
+        alert("Select files to upload.");
+        return;
+    }
+
+    var formData = new FormData();
+    for (var i = 0; i < fileInput.files.length; i++) {
+        formData.append("files", fileInput.files[i]);
+    }
+
+    try {
+        var url = "/api/admin/rag/" + ragId + "/upload";
+        // Can't use apiFetch for multipart — build auth manually
+        var headers = {};
+        if (adminToken) {
+            url += "?token=" + encodeURIComponent(adminToken);
+        } else if (sessionToken) {
+            headers["X-Session-Token"] = sessionToken;
+        }
+        var resp = await fetch(url, { method: "POST", body: formData, headers: headers });
+        if (!resp.ok) {
+            var errText = await resp.text();
+            throw new Error("Upload failed: " + errText);
+        }
+        var result = await resp.json();
+        var count = (result.documents || []).length;
+        alert("Uploaded " + count + " document(s) successfully.");
+        fileInput.value = "";
+        loadRagDocuments(ragId);
+    } catch (e) {
+        alert("Upload error: " + e.message);
+    }
+}
+
+async function deleteRagDocument(ragId, docId, filename) {
+    if (!confirm("Delete document: " + filename + "?")) return;
+    try {
+        await apiFetch("/api/admin/rag/" + ragId + "/documents/" + encodeURIComponent(docId), {
+            method: "DELETE",
+        });
+        loadRagDocuments(ragId);
+    } catch (e) {
+        alert("Delete failed: " + e.message);
+    }
+}
+
+async function queryRagEndpoint(ragId) {
+    var input = document.getElementById("rag-query-" + ragId);
+    var resultsDiv = document.getElementById("rag-query-results-" + ragId);
+    if (!input || !resultsDiv) return;
+
+    var query = input.value.trim();
+    if (!query) return;
+
+    resultsDiv.classList.remove("hidden");
+    resultsDiv.textContent = "Searching...";
+
+    try {
+        var data = await apiFetch("/api/admin/rag/" + ragId + "/query", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ query: query, top_k: 5 }),
+        });
+
+        resultsDiv.textContent = "";
+
+        var header = document.createElement("div");
+        header.className = "rag-query-header";
+        header.textContent = data.results.length + " results (" + (data.query_time_ms || 0).toFixed(0) + "ms)";
+
+        var closeBtn = document.createElement("button");
+        closeBtn.className = "btn-xs btn-secondary";
+        closeBtn.textContent = "Close";
+        closeBtn.addEventListener("click", function () {
+            resultsDiv.classList.add("hidden");
+        });
+        header.appendChild(closeBtn);
+        resultsDiv.appendChild(header);
+
+        if (data.results.length === 0) {
+            var noRes = document.createElement("p");
+            noRes.className = "text-muted";
+            noRes.textContent = "No results found.";
+            resultsDiv.appendChild(noRes);
+            return;
+        }
+
+        data.results.forEach(function (r, i) {
+            var item = document.createElement("div");
+            item.className = "rag-result-item";
+
+            var meta = document.createElement("div");
+            meta.className = "rag-result-meta";
+            meta.textContent = (i + 1) + ". " + r.filename + " (chunk " + r.chunk_index + ", score: " + r.score.toFixed(3) + ")";
+            item.appendChild(meta);
+
+            var text = document.createElement("pre");
+            text.className = "rag-result-text";
+            text.textContent = r.text;
+            item.appendChild(text);
+
+            resultsDiv.appendChild(item);
+        });
+    } catch (e) {
+        resultsDiv.textContent = "Query failed: " + e.message;
     }
 }
 

@@ -343,6 +343,93 @@ async def handle_rag_health(request: web.Request) -> web.Response:
 
 
 # ---------------------------------------------------------------------------
+# 5b. RAG Documents Proxy — browse & upload docs via the RAG service
+# ---------------------------------------------------------------------------
+
+def _rag_base_url(rag_id: int) -> str:
+    """Return the base URL for a RAG endpoint, or raise 404."""
+    endpoints = db.list_rag_endpoints()
+    ep = next((e for e in endpoints if e["id"] == rag_id), None)
+    if ep is None:
+        raise web.HTTPNotFound(text="RAG endpoint not found")
+    return ep["url"].rstrip("/")
+
+
+async def handle_rag_documents(request: web.Request) -> web.Response:
+    """GET /api/admin/rag/{id}/documents — list indexed documents."""
+    _check_auth(request)
+    rag_id = int(request.match_info["id"])
+    url = _rag_base_url(rag_id) + "/documents"
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(url)
+            return web.json_response(resp.json(), status=resp.status_code)
+    except Exception as exc:
+        return web.json_response({"error": str(exc)}, status=502)
+
+
+async def handle_rag_upload(request: web.Request) -> web.Response:
+    """POST /api/admin/rag/{id}/upload — upload files to RAG service."""
+    _check_auth(request)
+    rag_id = int(request.match_info["id"])
+    url = _rag_base_url(rag_id) + "/upload"
+
+    # Forward the multipart upload
+    reader = await request.multipart()
+    import httpx
+    files = []
+    while True:
+        part = await reader.next()
+        if part is None:
+            break
+        if part.name == "files":
+            data = await part.read()
+            fname = part.filename or "unnamed"
+            files.append(("files", (fname, data, part.headers.get("Content-Type", "application/octet-stream"))))
+
+    if not files:
+        raise web.HTTPBadRequest(text="No files provided")
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(url, files=files)
+            return web.json_response(resp.json(), status=resp.status_code)
+    except Exception as exc:
+        return web.json_response({"error": str(exc)}, status=502)
+
+
+async def handle_rag_delete_doc(request: web.Request) -> web.Response:
+    """DELETE /api/admin/rag/{id}/documents/{doc_id} — delete a document."""
+    _check_auth(request)
+    rag_id = int(request.match_info["id"])
+    doc_id = request.match_info["doc_id"]
+    url = _rag_base_url(rag_id) + "/documents/" + doc_id
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.delete(url)
+            return web.json_response(resp.json(), status=resp.status_code)
+    except Exception as exc:
+        return web.json_response({"error": str(exc)}, status=502)
+
+
+async def handle_rag_query(request: web.Request) -> web.Response:
+    """POST /api/admin/rag/{id}/query — test a query against the RAG service."""
+    _check_auth(request)
+    rag_id = int(request.match_info["id"])
+    url = _rag_base_url(rag_id) + "/query"
+    body = await request.json()
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(url, json=body)
+            return web.json_response(resp.json(), status=resp.status_code)
+    except Exception as exc:
+        return web.json_response({"error": str(exc)}, status=502)
+
+
+# ---------------------------------------------------------------------------
 # 6. Config & Stats API
 # ---------------------------------------------------------------------------
 
@@ -508,6 +595,12 @@ def register_admin_routes(app: web.Application) -> None:
     app.router.add_put("/api/admin/rag/{id}", handle_update_rag)
     app.router.add_delete("/api/admin/rag/{id}", handle_delete_rag)
     app.router.add_post("/api/admin/rag/{id}/health", handle_rag_health)
+
+    # RAG document proxy
+    app.router.add_get("/api/admin/rag/{id}/documents", handle_rag_documents)
+    app.router.add_post("/api/admin/rag/{id}/upload", handle_rag_upload)
+    app.router.add_delete("/api/admin/rag/{id}/documents/{doc_id}", handle_rag_delete_doc)
+    app.router.add_post("/api/admin/rag/{id}/query", handle_rag_query)
 
     # Config & stats
     app.router.add_get("/api/admin/config", handle_get_config)
