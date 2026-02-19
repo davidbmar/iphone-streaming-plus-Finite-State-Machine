@@ -16,6 +16,7 @@ from pathlib import Path
 from aiohttp import web
 
 from gateway import db
+from gateway.auth import authenticate_session_token
 from voice_assistant.tools import TOOL_REGISTRY
 
 log = logging.getLogger("admin")
@@ -46,14 +47,43 @@ _ALLOWED_CONFIG_KEYS = {
 # Auth helper
 # ---------------------------------------------------------------------------
 
-def _check_auth(request: web.Request) -> None:
-    """Raise 401 if the request lacks a valid token."""
+class _AuthCtx:
+    """Result of _check_auth: who is making the request."""
+    __slots__ = ("is_admin", "user_id")
+
+    def __init__(self, is_admin: bool, user_id: int | None):
+        self.is_admin = is_admin
+        self.user_id = user_id
+
+
+def _check_auth(request: web.Request) -> _AuthCtx:
+    """Authenticate via admin token OR user session token.
+
+    Admin token → full access (is_admin=True, user_id=None).
+    Session token → user-scoped access (is_admin=False, user_id=N).
+    Neither valid → raise 401.
+    """
     token = (
         request.query.get("token", "")
         or request.headers.get("X-Auth-Token", "")
     )
-    if token != AUTH_TOKEN:
-        raise web.HTTPUnauthorized(text="Bad token")
+
+    # 1. Check admin token
+    if token and token == AUTH_TOKEN:
+        return _AuthCtx(is_admin=True, user_id=None)
+
+    # 2. Check user session token (header or query param for WebSocket)
+    session_token = (
+        request.headers.get("X-Session-Token", "")
+        or request.query.get("session_token", "")
+    )
+    if session_token:
+        result = authenticate_session_token(session_token)
+        if result:
+            user_id, _user_info = result
+            return _AuthCtx(is_admin=False, user_id=user_id)
+
+    raise web.HTTPUnauthorized(text="Bad token")
 
 
 # ---------------------------------------------------------------------------
@@ -61,12 +91,34 @@ def _check_auth(request: web.Request) -> None:
 # ---------------------------------------------------------------------------
 
 async def handle_admin_page(request: web.Request) -> web.Response:
-    """GET /admin — serve the admin SPA (token checked via query param)."""
-    _check_auth(request)
+    """GET /admin — serve the admin SPA.
+
+    The page itself is public (static HTML/JS/CSS). All API endpoints
+    are authenticated, and the JS shows an auth gate for unauthenticated
+    users. This allows Google-authenticated users to access the dashboard
+    without knowing the admin token.
+    """
     html_path = WEB_DIR / "admin.html"
     if not html_path.exists():
         raise web.HTTPNotFound(text="admin.html not found")
     return web.Response(text=html_path.read_text(), content_type="text/html")
+
+
+async def handle_admin_me(request: web.Request) -> web.Response:
+    """GET /api/admin/me — return current auth context."""
+    auth = _check_auth(request)
+    if auth.is_admin:
+        return web.json_response({"role": "admin", "user": None})
+    user = db.get_user(auth.user_id)
+    return web.json_response({
+        "role": "user",
+        "user": {
+            "id": user["id"],
+            "name": user["name"],
+            "email": user["email"],
+            "avatar_url": user["avatar_url"],
+        } if user else None,
+    })
 
 
 # ---------------------------------------------------------------------------
@@ -74,29 +126,32 @@ async def handle_admin_page(request: web.Request) -> web.Response:
 # ---------------------------------------------------------------------------
 
 async def handle_list_sessions(request: web.Request) -> web.Response:
-    """GET /api/admin/sessions"""
-    _check_auth(request)
+    """GET /api/admin/sessions — admin sees all, user sees own."""
+    auth = _check_auth(request)
     limit = int(request.query.get("limit", "50"))
     offset = int(request.query.get("offset", "0"))
     search = request.query.get("search") or None
-    rows = db.list_sessions(limit=limit, offset=offset, search=search)
+    uid = None if auth.is_admin else auth.user_id
+    rows = db.list_sessions(limit=limit, offset=offset, search=search, user_id=uid)
     return web.json_response(rows)
 
 
 async def handle_get_session(request: web.Request) -> web.Response:
-    """GET /api/admin/sessions/{id}"""
-    _check_auth(request)
+    """GET /api/admin/sessions/{id} — user can only view own sessions."""
+    auth = _check_auth(request)
     session_id = request.match_info["id"]
-    session = db.get_session(session_id)
+    uid = None if auth.is_admin else auth.user_id
+    session = db.get_session(session_id, user_id=uid)
     if session is None:
         raise web.HTTPNotFound(text="Session not found")
     return web.json_response(session)
 
 
 async def handle_delete_sessions(request: web.Request) -> web.Response:
-    """DELETE /api/admin/sessions"""
-    _check_auth(request)
-    db.delete_all_sessions()
+    """DELETE /api/admin/sessions — user deletes own, admin deletes all."""
+    auth = _check_auth(request)
+    uid = None if auth.is_admin else auth.user_id
+    db.delete_all_sessions(user_id=uid)
     return web.json_response({"status": "cleared"})
 
 
@@ -426,6 +481,9 @@ def register_admin_routes(app: web.Application) -> None:
     """Add all admin routes to the aiohttp application."""
     # Admin page
     app.router.add_get("/admin", handle_admin_page)
+
+    # Auth context
+    app.router.add_get("/api/admin/me", handle_admin_me)
 
     # Live log WebSocket
     app.router.add_get("/admin/ws", handle_admin_ws)

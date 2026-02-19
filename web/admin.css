@@ -110,6 +110,23 @@ body::before {
     padding: 0 6px;
 }
 
+.auth-card .auth-hint {
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    margin-bottom: 16px;
+    text-align: center;
+    line-height: 1.5;
+}
+
+.auth-card .auth-hint a {
+    color: var(--gold);
+    text-decoration: none;
+}
+
+.auth-card .auth-hint a:hover {
+    text-decoration: underline;
+}
+
 .auth-card label {
     align-self: flex-start;
     font-family: var(--font-display);
@@ -205,6 +222,35 @@ body::before {
     font-size: 0.7rem;
     color: var(--gold-light);
     letter-spacing: 0.05em;
+}
+
+.user-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 5px 12px;
+    background: var(--bg-card);
+    border: 1px solid var(--gold-border);
+    font-family: var(--font-body);
+    font-size: 0.75rem;
+    color: var(--gold-light);
+    letter-spacing: 0.03em;
+}
+
+.user-badge.admin-badge {
+    border-color: var(--red-ember);
+    color: var(--red-ember);
+    font-family: var(--font-mono);
+    font-weight: 700;
+    font-size: 0.65rem;
+    letter-spacing: 0.1em;
+}
+
+.user-avatar {
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    border: 1px solid var(--gold-border);
 }
 
 

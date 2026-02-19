@@ -74,42 +74,58 @@ function formatUptime(seconds) {
 }
 
 // ---------------------------------------------------------------------------
-// Auth state
+// Auth state — supports admin token OR user session token (from Google login)
 // ---------------------------------------------------------------------------
 
-let token = sessionStorage.getItem("admin_token") || "";
+let adminToken = sessionStorage.getItem("admin_token") || "";
+let sessionToken = localStorage.getItem("session_token") || "";
+let currentRole = ""; // "admin" or "user"
+let currentUser = null; // {id, name, email, avatar_url} when role=user
 
-function getToken() {
-    return token;
+function getAdminToken() {
+    return adminToken;
 }
 
-function setToken(t) {
-    token = t;
+function setAdminToken(t) {
+    adminToken = t;
     sessionStorage.setItem("admin_token", t);
 }
 
+function getSessionToken() {
+    return sessionToken;
+}
+
 // ---------------------------------------------------------------------------
-// API fetch helper — appends ?token=X to all requests
+// API fetch helper — sends admin token as ?token= OR session token as header
 // ---------------------------------------------------------------------------
 
 async function apiFetch(path, options) {
     options = options || {};
-    const sep = path.includes("?") ? "&" : "?";
-    const url = path + sep + "token=" + encodeURIComponent(getToken());
+    options.headers = options.headers || {};
 
-    const resp = await fetch(url, options);
+    var url = path;
+    if (adminToken) {
+        // Admin token auth via query param
+        var sep = path.includes("?") ? "&" : "?";
+        url = path + sep + "token=" + encodeURIComponent(adminToken);
+    } else if (sessionToken) {
+        // User session token via header
+        options.headers["X-Session-Token"] = sessionToken;
+    }
+
+    var resp = await fetch(url, options);
     if (resp.status === 401) {
         // Token invalid — clear and show auth gate
-        setToken("");
+        setAdminToken("");
+        sessionToken = "";
         showAuthGate();
         throw new Error("Unauthorized");
     }
     if (!resp.ok) {
-        const text = await resp.text();
+        var text = await resp.text();
         throw new Error("API " + resp.status + ": " + text);
     }
-    // Some DELETE endpoints may return 200 with JSON
-    const ct = resp.headers.get("content-type") || "";
+    var ct = resp.headers.get("content-type") || "";
     if (ct.includes("application/json")) {
         return resp.json();
     }
@@ -191,31 +207,74 @@ function hideAuthGate() {
     dashboard.classList.remove("hidden");
 }
 
+function updateUserDisplay() {
+    var uptimeEl = document.getElementById("server-uptime");
+    var headerBar = document.getElementById("header-bar");
+    // Show user badge in header if logged in as user
+    var existing = document.getElementById("user-badge");
+    if (existing) existing.remove();
+
+    if (currentRole === "user" && currentUser) {
+        var badge = document.createElement("span");
+        badge.id = "user-badge";
+        badge.className = "user-badge";
+        if (currentUser.avatar_url) {
+            var img = document.createElement("img");
+            img.src = currentUser.avatar_url;
+            img.alt = "";
+            img.className = "user-avatar";
+            badge.appendChild(img);
+        }
+        badge.appendChild(document.createTextNode(currentUser.name || currentUser.email));
+        if (headerBar) headerBar.appendChild(badge);
+    } else if (currentRole === "admin") {
+        var adminBadge = document.createElement("span");
+        adminBadge.id = "user-badge";
+        adminBadge.className = "user-badge admin-badge";
+        adminBadge.textContent = "ADMIN";
+        if (headerBar) headerBar.appendChild(adminBadge);
+    }
+}
+
+async function fetchIdentity() {
+    var me = await apiFetch("/api/admin/me");
+    currentRole = me.role;
+    currentUser = me.user;
+    updateUserDisplay();
+}
+
 async function authenticate() {
-    const inputToken = authTokenInput.value.trim();
+    var inputToken = authTokenInput.value.trim();
     if (!inputToken) {
         authStatus.textContent = "Please enter a token.";
         return;
     }
-    setToken(inputToken);
+    setAdminToken(inputToken);
     authStatus.textContent = "Authenticating...";
     try {
-        await apiFetch("/api/admin/config");
+        await fetchIdentity();
         authStatus.textContent = "";
         hideAuthGate();
         onDashboardReady();
     } catch (e) {
         authStatus.textContent = "Authentication failed.";
-        setToken("");
+        setAdminToken("");
     }
 }
 
-// On page load: check for existing token
+// On page load: try session token (Google login) first, then admin token
 (function initAuth() {
-    if (token) {
-        // Validate saved token
-        authStatus.textContent = "Checking saved token...";
-        apiFetch("/api/admin/config")
+    // 1. Try URL query param token (admin bookmark)
+    var urlParams = new URLSearchParams(window.location.search);
+    var urlToken = urlParams.get("token");
+    if (urlToken) {
+        setAdminToken(urlToken);
+    }
+
+    // 2. Try admin token
+    if (adminToken) {
+        authStatus.textContent = "Checking admin token...";
+        fetchIdentity()
             .then(function () {
                 authStatus.textContent = "";
                 hideAuthGate();
@@ -223,11 +282,34 @@ async function authenticate() {
             })
             .catch(function () {
                 authStatus.textContent = "";
-                setToken("");
-                showAuthGate();
+                setAdminToken("");
+                // Fall through to try session token
+                trySessionToken();
             });
-    } else {
-        showAuthGate();
+        return;
+    }
+
+    // 3. Try user session token from Google login
+    trySessionToken();
+
+    function trySessionToken() {
+        sessionToken = localStorage.getItem("session_token") || "";
+        if (sessionToken) {
+            authStatus.textContent = "Signing in with Google account...";
+            fetchIdentity()
+                .then(function () {
+                    authStatus.textContent = "";
+                    hideAuthGate();
+                    onDashboardReady();
+                })
+                .catch(function () {
+                    authStatus.textContent = "";
+                    sessionToken = "";
+                    showAuthGate();
+                });
+        } else {
+            showAuthGate();
+        }
     }
 })();
 
@@ -301,9 +383,12 @@ tabBtns.forEach(function (btn) {
 
 function onDashboardReady() {
     switchTab("conversations");
-    // Update download-log link with token
+    // Update download-log link with auth
     if (downloadLogLink) {
-        downloadLogLink.href = "/api/admin/logs?limit=99999&token=" + encodeURIComponent(getToken());
+        var logAuth = adminToken
+            ? "token=" + encodeURIComponent(adminToken)
+            : "session_token=" + encodeURIComponent(sessionToken);
+        downloadLogLink.href = "/api/admin/logs?limit=99999&" + logAuth;
     }
 }
 
@@ -606,7 +691,10 @@ function connectLogWS() {
     clearTimeout(logReconnectTimer);
 
     const proto = location.protocol === "https:" ? "wss:" : "ws:";
-    const wsUrl = proto + "//" + location.host + "/admin/ws?token=" + encodeURIComponent(getToken());
+    var wsAuth = adminToken
+        ? "token=" + encodeURIComponent(adminToken)
+        : "session_token=" + encodeURIComponent(sessionToken);
+    const wsUrl = proto + "//" + location.host + "/admin/ws?" + wsAuth;
 
     try {
         logWS = new WebSocket(wsUrl);
@@ -1285,7 +1373,10 @@ function renderConfig(data) {
 
     // Update download log link
     if (downloadLogLink) {
-        downloadLogLink.href = "/api/admin/logs?limit=99999&token=" + encodeURIComponent(getToken());
+        var dlAuth = adminToken
+            ? "token=" + encodeURIComponent(adminToken)
+            : "session_token=" + encodeURIComponent(sessionToken);
+        downloadLogLink.href = "/api/admin/logs?limit=99999&" + dlAuth;
     }
 }
 
