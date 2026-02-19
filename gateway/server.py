@@ -97,6 +97,7 @@ async def handle_ws(request: web.Request) -> web.WebSocketResponse:
     search_enabled = True  # User toggle, defaults ON
     client_tz = ""  # IANA timezone from browser (e.g. "America/Chicago")
     db_session_id = None  # SQLite session tracking
+    mic_timeout_task = None  # Safety timer for runaway mic recordings
 
     # ── Orchestrator setup (shared tool registry) ───────────
     # Tools come from voice_assistant/tools/ — same registry for both UIs.
@@ -532,11 +533,36 @@ async def handle_ws(request: web.Request) -> web.WebSocketResponse:
                     log.debug("Partial transcription: %r", text[:80] if text else "")
                 session.start_recording(on_transcription=on_transcription)
                 log.info("Mic recording started (live)")
+
+                # Safety timeout: auto-stop recording after 30s in case
+                # the client's touchend/mic_stop message is lost
+                async def _mic_safety_timeout():
+                    await asyncio.sleep(30)
+                    if session and session.is_recording:
+                        log.warning("Mic safety timeout (30s) — auto-stopping recording")
+                        text, no_speech_prob, avg_logprob, audio_duration_s = await session.stop_recording()
+                        await _safe_ws_send({"type": "transcription", "text": text, "partial": False})
+                        await _safe_ws_send({"type": "mic_timeout"})
+                        if text.strip():
+                            log.info("Safety-timeout transcription: %r", text[:80])
+                            if db_session_id:
+                                add_turn(db_session_id, "user", text,
+                                         audio_duration_s=audio_duration_s,
+                                         no_speech_prob=no_speech_prob,
+                                         avg_logprob=avg_logprob)
+                            if agent_mode:
+                                _refresh_orchestrator_tools()
+                                asyncio.create_task(_do_agent_reply(text, no_speech_prob, avg_logprob, audio_duration_s))
+                mic_timeout_task = asyncio.create_task(_mic_safety_timeout())
             else:
                 await ws.send_json({"type": "error", "message": "No WebRTC session"})
 
         elif msg_type == "mic_stop":
             if session:
+                # Cancel safety timeout since client sent mic_stop normally
+                if mic_timeout_task and not mic_timeout_task.done():
+                    mic_timeout_task.cancel()
+                    mic_timeout_task = None
                 log.info("Mic recording stopping, final STT...")
                 text, no_speech_prob, avg_logprob, audio_duration_s = await session.stop_recording()
                 await ws.send_json({"type": "transcription", "text": text, "partial": False})

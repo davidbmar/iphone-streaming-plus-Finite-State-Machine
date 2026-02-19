@@ -540,6 +540,14 @@ function handleMessage(msg) {
             }
             break;
 
+        case "mic_timeout":
+            // Server auto-stopped recording due to safety timeout
+            console.warn("Server mic safety timeout — resetting button");
+            isRecording = false;
+            talkBtn.classList.remove("recording");
+            talkBtn.textContent = "Hold to Speak";
+            break;
+
         case "agent_searching":
             playSearchPing();
             {
@@ -1190,6 +1198,21 @@ talkBtn.addEventListener("touchcancel", (e) => {
     e.preventDefault();
     console.log("touch: touchcancel");
     stopTalking();
+});
+
+// Safety net: if touchend fires on a different element (finger slid off button),
+// catch it at the document level so recording always stops.
+document.addEventListener("touchend", () => {
+    if (isRecording) {
+        console.log("touch: document touchend safety — stopping recording");
+        stopTalking();
+    }
+});
+document.addEventListener("touchcancel", () => {
+    if (isRecording) {
+        console.log("touch: document touchcancel safety — stopping recording");
+        stopTalking();
+    }
 });
 
 // Hold-to-talk: mouse events (desktop fallback)

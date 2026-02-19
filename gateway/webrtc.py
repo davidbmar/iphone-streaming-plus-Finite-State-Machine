@@ -237,6 +237,10 @@ class Session:
                 pcm = flat.astype(np.int16).tobytes()
                 self._mic_frames.append(pcm)
 
+    @property
+    def is_recording(self):
+        return self._recording
+
     def start_recording(self, on_transcription=None):
         """Start buffering incoming mic audio frames.
 
