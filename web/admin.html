@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>Voice Agent Admin</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@400;500;600;700&family=Raleway:wght@300;400;500;600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/admin.css?v=1">
+</head>
+<body>
+
+<!-- Auth Gate — shown first, hidden once authenticated -->
+<div id="auth-gate">
+    <div class="auth-card">
+        <h1>Admin Dashboard</h1>
+        <div class="deco-divider"></div>
+        <label for="admin-token">Token</label>
+        <input type="password" id="admin-token" placeholder="Enter admin token">
+        <button class="btn-primary" id="auth-btn">Authenticate</button>
+        <p class="auth-status" id="auth-status"></p>
+    </div>
+</div>
+
+<!-- Dashboard — hidden until authenticated -->
+<div id="dashboard" class="hidden">
+
+    <!-- Header bar -->
+    <header id="header-bar">
+        <h1>Voice Agent Admin</h1>
+        <div id="server-uptime" class="uptime-display">Uptime: --</div>
+    </header>
+
+    <!-- Tab navigation -->
+    <nav id="tab-bar">
+        <button class="tab-btn active" data-tab="conversations">Conversations</button>
+        <button class="tab-btn" data-tab="logs">Live Logs</button>
+        <button class="tab-btn" data-tab="tools">Tools &amp; RAG</button>
+        <button class="tab-btn" data-tab="config">Config</button>
+    </nav>
+
+    <!-- ========== Conversations Tab ========== -->
+    <section id="tab-conversations" class="tab-panel">
+        <div class="toolbar">
+            <input type="text" id="session-search" placeholder="Search sessions...">
+            <button class="btn-secondary" id="refresh-sessions-btn">Refresh</button>
+            <button class="btn-danger" id="clear-all-btn">Clear All</button>
+        </div>
+        <div id="sessions-list"></div>
+        <div id="session-detail" class="hidden">
+            <button class="btn-secondary" id="back-to-list-btn">&larr; Back</button>
+            <div id="session-detail-content"></div>
+        </div>
+    </section>
+
+    <!-- ========== Live Logs Tab ========== -->
+    <section id="tab-logs" class="tab-panel hidden">
+        <div class="toolbar">
+            <div class="log-level-filters">
+                <button class="level-btn active" data-level="all">All</button>
+                <button class="level-btn" data-level="error">Error</button>
+                <button class="level-btn" data-level="warn">Warn</button>
+                <button class="level-btn" data-level="info">Info</button>
+            </div>
+            <input type="text" id="log-search" placeholder="Filter logs...">
+            <button class="btn-secondary" id="pause-logs-btn">Pause</button>
+        </div>
+        <pre id="log-output"></pre>
+    </section>
+
+    <!-- ========== Tools & RAG Tab ========== -->
+    <section id="tab-tools" class="tab-panel hidden">
+        <div class="admin-section">
+            <h2>Tool Registry</h2>
+            <div id="tools-list"></div>
+        </div>
+
+        <div class="admin-section">
+            <h2>Web Search Providers</h2>
+            <div id="search-providers"></div>
+        </div>
+
+        <div class="admin-section">
+            <h2>RAG Endpoints</h2>
+            <div id="rag-list"></div>
+            <button class="btn-secondary" id="add-rag-btn">Add RAG Endpoint</button>
+
+            <div id="rag-form" class="hidden">
+                <div class="form-group">
+                    <label for="rag-name">Name</label>
+                    <input type="text" id="rag-name" placeholder="Endpoint name">
+                </div>
+                <div class="form-group">
+                    <label for="rag-url">URL</label>
+                    <input type="text" id="rag-url" placeholder="https://...">
+                </div>
+                <div class="form-group">
+                    <label for="rag-description">Description</label>
+                    <input type="text" id="rag-description" placeholder="What this endpoint provides">
+                </div>
+                <div class="form-group">
+                    <label for="rag-upload-url">Upload Page URL</label>
+                    <input type="text" id="rag-upload-url" placeholder="https://...">
+                </div>
+                <div class="form-actions">
+                    <button class="btn-primary" id="save-rag-btn">Save</button>
+                    <button class="btn-secondary" id="cancel-rag-btn">Cancel</button>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- ========== Config Tab ========== -->
+    <section id="tab-config" class="tab-panel hidden">
+        <div class="admin-section">
+            <h2>Server</h2>
+            <div id="server-info"></div>
+        </div>
+
+        <div class="admin-section">
+            <h2>LLM Defaults</h2>
+            <div id="llm-config"></div>
+        </div>
+
+        <div class="admin-section">
+            <h2>Search Quota</h2>
+            <div id="search-quota"></div>
+        </div>
+
+        <div class="admin-section">
+            <h2>Actions</h2>
+            <a href="/admin/api/logs/download" class="btn-secondary" id="download-log-link">Download Log</a>
+        </div>
+    </section>
+
+</div><!-- end #dashboard -->
+
+<script src="/static/admin.js?v=1"></script>
+</body>
+</html>
