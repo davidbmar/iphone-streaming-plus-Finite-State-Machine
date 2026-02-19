@@ -73,6 +73,7 @@ class Session:
         self._transcribe_task: asyncio.Task | None = None
         self._on_transcription = None  # callback for partial results
         self._transcribe_interval = 5  # seconds between partial transcriptions
+        self._closed = False  # guard against double-close
 
         # Log state changes
         @self._pc.on("connectionstatechange")
@@ -247,7 +248,8 @@ class Session:
         self._recording = True
         self._on_transcription = on_transcription
         self._transcribe_task = asyncio.ensure_future(self._periodic_transcribe())
-        log.info("Mic recording started (live transcription enabled)")
+        log.info("Mic recording started (live transcription enabled, mic_track=%s)",
+                 "attached" if self._mic_track else "MISSING")
 
     async def _periodic_transcribe(self):
         """Background task: transcribe accumulated audio every N seconds."""
@@ -282,7 +284,7 @@ class Session:
             self._transcribe_task = None
 
         if not self._mic_frames:
-            log.warning("No mic frames captured")
+            log.warning("No mic frames captured — recording may have started before mic track was ready")
             return "", 0.0, 0.0, 0.0
 
         # Final transcription of all audio
@@ -291,7 +293,13 @@ class Session:
         self._mic_frames.clear()
 
         audio_duration_s = len(pcm_data) / (SAMPLE_RATE * 2)  # 2 bytes per int16 sample
-        log.info("Mic recording stopped: %d frames, %d bytes, %.2fs", num_frames, len(pcm_data), audio_duration_s)
+
+        # Audio energy diagnostics — detect dead mic / silence
+        samples = np.frombuffer(pcm_data, dtype=np.int16)
+        rms = float(np.sqrt(np.mean(samples.astype(np.float32) ** 2)))
+        peak = int(np.max(np.abs(samples)))
+        log.info("Mic recording stopped: %d frames, %d bytes, %.2fs — rms=%.0f peak=%d (of 32768)",
+                 num_frames, len(pcm_data), audio_duration_s, rms, peak)
 
         from engine.stt import transcribe
         loop = asyncio.get_event_loop()
@@ -299,7 +307,11 @@ class Session:
         return text, no_speech_prob, avg_logprob, audio_duration_s
 
     async def close(self):
-        """Tear down the peer connection."""
+        """Tear down the peer connection (idempotent — safe to call multiple times)."""
+        if self._closed:
+            log.debug("Session.close() called again (already closed)")
+            return
+        self._closed = True
         self.stop_audio()
         self._recording = False
         if self._transcribe_task:

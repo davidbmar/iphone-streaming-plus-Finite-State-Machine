@@ -301,7 +301,11 @@ function populateVoiceSelect(voices, defaultVoice) {
 
 // --- WebSocket ---
 function sendMsg(type, payload = {}) {
-    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+        console.warn("sendMsg('%s') dropped — WS not open (readyState=%s)", type, ws ? ws.readyState : "null");
+        return;
+    }
+    if (type !== "ping") console.log("WS send:", type);
     ws.send(JSON.stringify({ type, ...payload }));
 }
 
@@ -329,6 +333,7 @@ function connect() {
     ws.onmessage = (ev) => {
         let msg;
         try { msg = JSON.parse(ev.data); } catch { return; }
+        if (msg.type !== "pong") console.log("WS recv:", msg.type);
         try {
             handleMessage(msg);
         } catch (err) {
@@ -343,7 +348,8 @@ function connect() {
         hideConnectProgress();
     };
 
-    ws.onclose = () => {
+    ws.onclose = (ev) => {
+        console.warn("WS closed: code=%d reason=%s wasClean=%s isRecording=%s", ev.code, ev.reason, ev.wasClean, isRecording);
         if (!agentScreen.classList.contains("hidden")) {
             agentScreen.classList.add("hidden");
             connectScreen.classList.remove("hidden");
@@ -724,10 +730,14 @@ function cleanupWebRTC() {
 
 // --- Hold to Talk ---
 function startTalking() {
-    if (!micStream || isRecording) return;
+    if (!micStream || isRecording) {
+        console.warn("startTalking() blocked: micStream=%s isRecording=%s", !!micStream, isRecording);
+        return;
+    }
     isRecording = true;
     talkBtn.classList.add("recording");
     talkBtn.textContent = "Transmitting\u2026";
+    console.log("Recording started — mic tracks:", micStream.getAudioTracks().map(t => t.label + " enabled=" + t.enabled + " muted=" + t.muted));
 
     // Stop any current agent audio
     if (agentSpeaking) {
@@ -739,10 +749,14 @@ function startTalking() {
 }
 
 function stopTalking() {
-    if (!isRecording) return;
+    if (!isRecording) {
+        console.warn("stopTalking() called but not recording");
+        return;
+    }
     isRecording = false;
     talkBtn.classList.remove("recording");
     talkBtn.textContent = "Hold to Speak";
+    console.log("Recording stopped");
     sendMsg("mic_stop");
 }
 
@@ -1021,14 +1035,17 @@ tokenInput.addEventListener("keydown", (e) => {
 // Hold-to-talk: touch events (mobile)
 talkBtn.addEventListener("touchstart", (e) => {
     e.preventDefault(); // Prevent long-press menu & ghost clicks
+    console.log("touch: touchstart");
     startTalking();
 });
 talkBtn.addEventListener("touchend", (e) => {
     e.preventDefault();
+    console.log("touch: touchend");
     stopTalking();
 });
 talkBtn.addEventListener("touchcancel", (e) => {
     e.preventDefault();
+    console.log("touch: touchcancel");
     stopTalking();
 });
 

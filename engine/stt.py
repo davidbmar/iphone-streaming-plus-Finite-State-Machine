@@ -48,7 +48,13 @@ def transcribe(audio_bytes: bytes, sample_rate: int = 48000):
     samples = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32) / 32768.0
 
     duration = len(samples) / sample_rate
-    log.debug("Transcribing %.2fs of audio (%d samples @ %dHz)", duration, len(samples), sample_rate)
+
+    # Audio quality diagnostics — helps debug empty transcriptions
+    rms = float(np.sqrt(np.mean(samples ** 2)))
+    peak = float(np.max(np.abs(samples)))
+    silence_ratio = float(np.mean(np.abs(samples) < 0.01))  # fraction below -40dB
+    log.info("STT input: %.2fs, %d samples @ %dHz — rms=%.4f peak=%.4f silence=%.0f%%",
+             duration, len(samples), sample_rate, rms, peak, silence_ratio * 100)
 
     # Resample to 16kHz — faster-whisper expects 16kHz input
     WHISPER_RATE = 16000
