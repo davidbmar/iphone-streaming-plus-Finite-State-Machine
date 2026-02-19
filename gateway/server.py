@@ -523,6 +523,8 @@ def create_app() -> web.Application:
     app.router.add_get("/ws", handle_ws)
     app.router.add_static("/static", WEB_DIR, show_index=False)
     init_db()
+    from gateway.admin import register_admin_routes
+    register_admin_routes(app)
     return app
 
 
