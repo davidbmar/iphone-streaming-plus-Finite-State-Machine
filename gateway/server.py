@@ -31,6 +31,7 @@ from voice_assistant.tool_router import dispatch_tool_call
 from engine.fast_path import try_fast_path
 from engine.input_filter import classify as classify_input, InputQuality
 from gateway.turn import fetch_twilio_turn_credentials
+from gateway.db import init_db, create_session, add_turn, end_session as db_end_session
 
 log = logging.getLogger("gateway")
 
@@ -84,6 +85,7 @@ async def handle_ws(request: web.Request) -> web.WebSocketResponse:
     tts_voice = DEFAULT_VOICE
     search_enabled = True  # User toggle, defaults ON
     client_tz = ""  # IANA timezone from browser (e.g. "America/Chicago")
+    db_session_id = None  # SQLite session tracking
 
     # ── Orchestrator setup (shared tool registry) ───────────
     # Tools come from voice_assistant/tools/ — same registry for both UIs.
@@ -230,6 +232,9 @@ async def handle_ws(request: web.Request) -> web.WebSocketResponse:
         if not await _safe_ws_send({"type": "agent_reply", "text": reply}):
             return  # Client gone, skip TTS
         log.info("Agent reply: %r (voice=%s)", reply[:80], tts_voice)
+        if db_session_id:
+            add_turn(db_session_id, "agent", reply,
+                     model_used=f"{llm_provider}/{llm_model}")
 
         try:
             if session:
@@ -247,7 +252,8 @@ async def handle_ws(request: web.Request) -> web.WebSocketResponse:
             continue
 
         msg_type = msg.get("type")
-        log.debug("WS recv: %s", msg_type)
+        if msg_type != "ping":  # Don't spam heartbeats
+            log.info("WS recv: %s", msg_type)
 
         if msg_type == "hello":
             token = msg.get("token", "")
@@ -322,6 +328,13 @@ async def handle_ws(request: web.Request) -> web.WebSocketResponse:
                 "search_enabled": search_enabled,
                 "search_quota": search_quota,
             })
+            db_session_id = create_session(
+                client_ip=request.remote or "",
+                client_timezone=client_tz,
+                llm_provider=llm_provider,
+                llm_model=llm_model,
+                voice=tts_voice,
+            )
 
         elif msg_type == "webrtc_offer":
             sdp = msg.get("sdp", "")
@@ -452,6 +465,11 @@ async def handle_ws(request: web.Request) -> web.WebSocketResponse:
                 text, no_speech_prob, avg_logprob, audio_duration_s = await session.stop_recording()
                 await ws.send_json({"type": "transcription", "text": text, "partial": False})
                 log.info("Final transcription: %r", text[:80] if text else "")
+                if db_session_id and text.strip():
+                    add_turn(db_session_id, "user", text,
+                             audio_duration_s=audio_duration_s,
+                             no_speech_prob=no_speech_prob,
+                             avg_logprob=avg_logprob)
 
                 # Agent mode: run in background so WS loop stays responsive
                 if agent_mode and text.strip():
@@ -485,6 +503,8 @@ async def handle_ws(request: web.Request) -> web.WebSocketResponse:
     # Cleanup on disconnect
     if session:
         await session.close()
+    if db_session_id:
+        db_end_session(db_session_id)
     log.info("WebSocket disconnected")
     return ws
 
@@ -502,6 +522,7 @@ def create_app() -> web.Application:
     app.router.add_get("/api/quota", handle_quota)
     app.router.add_get("/ws", handle_ws)
     app.router.add_static("/static", WEB_DIR, show_index=False)
+    init_db()
     return app
 
 
@@ -555,5 +576,6 @@ if __name__ == "__main__":
         log.info("Serving on https://0.0.0.0:%d", PORT)
     else:
         log.info("Serving on http://0.0.0.0:%d", PORT)
+    log.info("Admin dashboard: http://localhost:%d/admin", PORT)
 
     web.run_app(app, host="0.0.0.0", port=PORT, ssl_context=ssl_ctx)
