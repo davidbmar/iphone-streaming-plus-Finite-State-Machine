@@ -4,6 +4,8 @@ Stores conversation sessions, turns, RAG endpoint registry, and admin config.
 Uses WAL journal mode and one connection per call for thread safety.
 """
 
+from __future__ import annotations
+
 import json
 import sqlite3
 import uuid

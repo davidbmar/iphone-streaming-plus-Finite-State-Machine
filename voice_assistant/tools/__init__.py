@@ -4,7 +4,7 @@ No magic scanning or auto-discovery. Each tool is imported and
 registered explicitly so the registry is debuggable and predictable.
 """
 
-from __future__ import annotations
+from __future__ import annotations  # noqa: F401 — needed for 3.9 union type hints
 
 from typing import TYPE_CHECKING
 

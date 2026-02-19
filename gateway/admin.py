@@ -4,6 +4,8 @@ Provides endpoints for managing sessions, tools, search providers,
 RAG endpoints, server config, and tailing the server log in real time.
 """
 
+from __future__ import annotations
+
 import asyncio
 import json
 import logging
