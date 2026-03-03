@@ -1,5 +1,7 @@
 """WebRTC session management — PeerConnection lifecycle and ICE config."""
 
+from __future__ import annotations
+
 import asyncio
 import json
 import logging

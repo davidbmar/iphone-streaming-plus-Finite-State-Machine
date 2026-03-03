@@ -1,5 +1,7 @@
 """Piper TTS wrapper — text to 48kHz PCM with resampling and multi-voice support."""
 
+from __future__ import annotations
+
 import logging
 import os
 import urllib.request

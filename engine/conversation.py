@@ -1,5 +1,7 @@
 """Conversation state — sliding window of turns + system prompt."""
 
+from __future__ import annotations
+
 import os
 
 DEFAULT_SYSTEM_PROMPT = (

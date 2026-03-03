@@ -1,5 +1,7 @@
 """Self-signed certificate generator for LAN HTTPS testing."""
 
+from __future__ import annotations
+
 import logging
 import subprocess
 from pathlib import Path

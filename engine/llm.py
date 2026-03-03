@@ -1,5 +1,7 @@
 """LLM wrapper — Claude, OpenAI, or Ollama, switchable via env var."""
 
+from __future__ import annotations
+
 import asyncio
 import functools
 import json
@@ -8,6 +10,10 @@ import os
 from typing import Optional
 
 log = logging.getLogger("llm")
+
+# Claude model constants
+CLAUDE_HAIKU = "claude-haiku-4-5-20251001"
+CLAUDE_SONNET = "claude-sonnet-4-6-20250514"
 
 # Provider config from env
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "").lower()
@@ -168,7 +174,8 @@ async def get_available_models() -> dict:
     # Cloud providers
     cloud = []
     if ANTHROPIC_API_KEY:
-        cloud.append({"provider": "claude", "name": "Claude Haiku", "model": "claude-haiku-4-5-20251001"})
+        cloud.append({"provider": "claude", "name": "Claude Sonnet 4.6", "model": CLAUDE_SONNET})
+        cloud.append({"provider": "claude", "name": "Claude Haiku", "model": CLAUDE_HAIKU})
     if OPENAI_API_KEY:
         cloud.append({"provider": "openai", "name": f"OpenAI ({OPENAI_MODEL})", "model": OPENAI_MODEL})
 
@@ -202,17 +209,19 @@ async def pull_ollama_model(name: str):
 
 # ── Generation ────────────────────────────────────────────────
 
-def _generate_claude(system: str, messages: list[dict]) -> str:
-    """Call Claude Haiku via the Anthropic SDK (synchronous)."""
+def _generate_claude(system: str, messages: list[dict], model: str = "") -> str:
+    """Call Claude via the Anthropic SDK (synchronous)."""
     client = _get_anthropic()
+    active_model = model or CLAUDE_HAIKU
+    max_tokens = 1024 if "sonnet" in active_model else 300
     resp = client.messages.create(
-        model="claude-haiku-4-5-20251001",
-        max_tokens=300,
+        model=active_model,
+        max_tokens=max_tokens,
         system=system,
         messages=messages,
     )
     text = resp.content[0].text
-    log.info("Claude response: %d chars, stop=%s", len(text), resp.stop_reason)
+    log.info("Claude response (%s): %d chars, stop=%s", active_model, len(text), resp.stop_reason)
     return text
 
 
@@ -313,7 +322,7 @@ def _generate_sync(system: str, messages: list[dict], provider: str = "",
     provider = provider or _resolve_provider()
     log.info("LLM generate: provider=%s, model=%s, %d messages", provider, model, len(messages))
     if provider == "claude":
-        return _generate_claude(system, messages)
+        return _generate_claude(system, messages, model=model)
     elif provider == "openai":
         return _generate_openai(system, messages)
     else:
@@ -341,9 +350,12 @@ async def generate(system: str, messages: list[dict], provider: str = "",
 
 # ── Tool-calling generation ──────────────────────────────────
 
-def _generate_claude_with_tools(system: str, messages: list[dict], tools: list[dict]) -> tuple:
+def _generate_claude_with_tools(system: str, messages: list[dict],
+                                tools: list[dict], model: str = "") -> tuple:
     """Call Claude with tool-use support. Returns (text, tool_calls)."""
     client = _get_anthropic()
+    active_model = model or CLAUDE_HAIKU
+    max_tokens = 1024 if "sonnet" in active_model else 300
     anthropic_tools = [
         {
             "name": t["function"]["name"],
@@ -353,8 +365,8 @@ def _generate_claude_with_tools(system: str, messages: list[dict], tools: list[d
         for t in tools
     ]
     resp = client.messages.create(
-        model="claude-haiku-4-5-20251001",
-        max_tokens=300,
+        model=active_model,
+        max_tokens=max_tokens,
         system=system,
         messages=messages,
         tools=anthropic_tools,
@@ -369,8 +381,8 @@ def _generate_claude_with_tools(system: str, messages: list[dict], tools: list[d
                 "id": block.id,
                 "function": {"name": block.name, "arguments": block.input},
             })
-    log.info("Claude response: %d chars, %d tool calls, stop=%s",
-             len(text), len(tool_calls), resp.stop_reason)
+    log.info("Claude response (%s): %d chars, %d tool calls, stop=%s",
+             active_model, len(text), len(tool_calls), resp.stop_reason)
     return text, tool_calls
 
 
@@ -433,7 +445,7 @@ def _generate_with_tools_sync(system: str, messages: list[dict],
     log.info("LLM generate_with_tools: provider=%s, model=%s, %d tools",
              provider, model, len(tools))
     if provider == "claude":
-        return _generate_claude_with_tools(system, messages, tools)
+        return _generate_claude_with_tools(system, messages, tools, model=model)
     elif provider == "openai":
         return _generate_openai_with_tools(system, messages, tools)
     else:
@@ -542,7 +554,7 @@ def available_providers() -> list[dict]:
     """Return list of available providers with their config status."""
     providers = []
     if ANTHROPIC_API_KEY:
-        providers.append({"id": "claude", "name": "Claude Haiku"})
+        providers.append({"id": "claude", "name": "Claude Sonnet"})
     if OPENAI_API_KEY:
         providers.append({"id": "openai", "name": f"OpenAI ({OPENAI_MODEL})"})
     providers.append({"id": "ollama", "name": f"Ollama ({OLLAMA_MODEL})"})
