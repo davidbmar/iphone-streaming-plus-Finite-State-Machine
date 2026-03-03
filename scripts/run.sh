@@ -11,6 +11,14 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+
+# Load .env so PORT and other settings take effect
+if [ -f "$REPO_ROOT/.env" ]; then
+  set -a
+  source "$REPO_ROOT/.env"
+  set +a
+fi
+
 PORT="${PORT:-8080}"
 LOG_DIR="$REPO_ROOT/logs"
 LOG_FILE="$LOG_DIR/server.log"
@@ -89,9 +97,7 @@ echo "  Using: $PYTHON ($($PYTHON --version 2>&1))"
 echo ""
 
 # ── Ollama pre-check ──────────────────────────────────────
-# Read model from .env or default
-OLLAMA_MODEL=$(grep '^OLLAMA_MODEL=' "$REPO_ROOT/.env" 2>/dev/null | cut -d= -f2 || echo "qwen3:8b")
-[ -z "$OLLAMA_MODEL" ] && OLLAMA_MODEL="qwen3:8b"
+OLLAMA_MODEL="${OLLAMA_MODEL:-qwen3:8b}"
 
 echo "Checking Ollama ($OLLAMA_MODEL)..."
 if ! curl -sf http://localhost:11434/api/tags >/dev/null 2>&1; then
